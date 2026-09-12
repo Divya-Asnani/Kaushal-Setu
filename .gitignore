@@ -1,0 +1,42 @@
+# Environments & Secrets
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Python & Virtual Environments
+**/venv/
+**/env/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/*.egg-info/
+dist/
+build/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Flutter / Dart
+kaushalsetu/.dart_tool/
+kaushalsetu/.flutter-plugins
+kaushalsetu/.flutter-plugins-dependencies
+kaushalsetu/.pub-cache/
+kaushalsetu/.pub/
+kaushalsetu/build/
+kaushalsetu/ios/Flutter/.last_build_id
+kaushalsetu/android/app/debug/
+kaushalsetu/android/app/profile/
+kaushalsetu/android/app/release/
+
+# System & Temporary
+.DS_Store
+Thumbs.db
+*.log
