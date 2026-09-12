@@ -1,4 +1,4 @@
-# 🛠️ KaushalSetu (कौशल सेतु)
+# 🛠️ KaushalSetu
 ### AI-Driven Experience Mapping & Intelligent Opportunity Matching Platform
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
@@ -207,8 +207,3 @@ python -m pytest backend/tests/test_api.py -v
 * **Storage**: Media uploads use authenticated Supabase Storage URLs with MIME type validation.
 * **Authorization**: All endpoints enforce strict user ownership checks (users can only modify their own problems, jobs, and requests).
 
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
