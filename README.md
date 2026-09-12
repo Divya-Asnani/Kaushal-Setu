@@ -29,8 +29,21 @@ The frozen spec named `text-embedding-3-small`. The team runs on Gemini, so:
   no migration. Google only pre-normalises its full 3072-dimension output, so truncated
   vectors are L2-normalised in `services/ai/embeddings.py` before storage; without that,
   cosine distances would not be comparable between rows.
-- **Fingerprint extraction** — `gemma-3-27b-it`, for its large free daily request
-  allowance. Gemma has no structured-output mode, so JSON is requested in the prompt and
+- **Fingerprint extraction** — `gemma-4-31b-it` first, for its large free daily
+  allowance, with `gemini-3.5-flash-lite` as the backup. Gemma has no structured-output
+  mode, so its JSON is parsed from a prompted schema and a malformed reply is retried
+  with a stricter instruction; the backup enforces a real JSON response. A transient
+  `500` is retried with backoff, a `429` moves straight to the backup, and a single call
+  is cut off after `FINGERPRINT_TIMEOUT_SECONDS`. Set
+  `GEMINI_FINGERPRINT_FALLBACK_MODEL` blank to run on Gemma alone.
+
+> **Gemma is currently unreliable on this endpoint.** Measured live: intermittent
+> `500 INTERNAL` on roughly half of calls, and 37–93 s latency when it does answer.
+> Because a demo cannot wait 90 s, the timeout is 20 s — which means Gemma rarely wins
+> even when it would eventually succeed, and the backup serves most requests at 2–4 s.
+> The ordering is deliberate: if Gemma stabilises it takes over again automatically and
+> the backup's smaller daily budget stops being spent. Nothing needs changing for that
+> to happen. Gemma has no structured-output mode, so JSON is requested in the prompt and
   parsed defensively; a malformed reply is retried on the same model with a stricter
   instruction (`FINGERPRINT_MAX_ATTEMPTS`, default 3). A quota error is not retried,
   because repeating the call cannot help and only burns the remaining allowance.

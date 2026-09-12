@@ -285,61 +285,70 @@ _RETRY_NUDGE = (
 )
 
 
-def _call_model(contents: Any) -> str:
+def _call_model(model: str, contents: Any, structured: bool) -> str:
     from google.genai import types
 
-    # No response_mime_type here: Gemma does not support structured output, and this
-    # pipeline deliberately stays on Gemma for its free request-per-day allowance.
+    config = types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=1200,
+        # Gemma can take over a minute when the backend is strained. A demo cannot
+        # wait that long, so a slow call is cut short and the backup model takes over.
+        http_options=types.HttpOptions(timeout=settings.fingerprint_timeout_seconds * 1000),
+    )
+    if structured:
+        # Only the Gemini backup supports this; Gemma rejects it.
+        config.response_mime_type = "application/json"
+
     response = get_client().models.generate_content(
-        model=settings.gemini_fingerprint_model,
-        contents=contents,
-        config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=1200),
+        model=model, contents=contents, config=config
     )
     return (response.text or "").strip()
 
 
-def generate_fingerprint(
+def _try_model(
+    model: str,
+    structured: bool,
+    attempts: int,
     title: str,
     description: str,
-    images: list[tuple[bytes, str]] | None = None,
-) -> Fingerprint:
-    """Extract a fingerprint using Gemma. Raises APIError(AI_ERROR) if it cannot.
+    images: list[tuple[bytes, str]],
+) -> tuple[Fingerprint | None, Exception | None]:
+    """Run one model up to ``attempts`` times. Returns (result, last_error).
 
-    Two different failures are retried for different reasons:
-
-      * Gemma cannot be forced to emit JSON, so an unparseable reply is retried
-        immediately with a stricter instruction appended.
-      * Gemma returns 500 INTERNAL intermittently. That is a server-side fault, so the
-        same request is retried after a short backoff without changing the prompt.
-
-    A quota error (429) is never retried: repeating the call cannot help and only burns
-    the remaining allowance.
+    Two failures are retried for different reasons: an unparseable reply gets a
+    stricter instruction appended, while a transient 5xx gets the same prompt again
+    after a backoff. A quota error stops this model immediately -- repeating it cannot
+    help, and the caller should move on to the next model.
     """
-    model = settings.gemini_fingerprint_model
-    attempts = max(1, settings.fingerprint_max_attempts)
     last_error: Exception | None = None
     nudge = ""
 
     for attempt in range(attempts):
         try:
-            contents = _build_contents(title, description, images or [], nudge=nudge)
-            payload = _extract_json(_call_model(contents))
+            contents = _build_contents(title, description, images, nudge=nudge)
+            payload = _extract_json(_call_model(model, contents, structured))
             clean = _coerce(payload)
-            return Fingerprint(
-                **clean,
-                safety_warning=detect_safety_risk(title, description, clean.get("issue")),
-                model_used=model,
-                raw_ai_output={"model": model, "attempt": attempt + 1, "response": payload},
+            return (
+                Fingerprint(
+                    **clean,
+                    safety_warning=detect_safety_risk(
+                        title, description, clean.get("issue")
+                    ),
+                    model_used=model,
+                    raw_ai_output={
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "response": payload,
+                    },
+                ),
+                None,
             )
         except Exception as exc:
             last_error = exc
 
             if is_quota_error(exc):
                 log.warning("Fingerprint model %s is out of quota", model)
-                raise APIError(
-                    AI_ERROR,
-                    "The fingerprint model is temporarily out of quota. Please try again later.",
-                ) from exc
+                return None, exc
 
             transient = is_transient_server_error(exc)
             log.warning(
@@ -350,10 +359,50 @@ def generate_fingerprint(
 
             if attempt < attempts - 1:
                 if transient:
-                    # Server-side fault: same prompt, brief backoff.
                     time.sleep(_BACKOFF_SECONDS * (2**attempt))
                 else:
-                    # Bad output: same model, stricter instruction.
                     nudge = _RETRY_NUDGE
 
+    return None, last_error
+
+
+def generate_fingerprint(
+    title: str,
+    description: str,
+    images: list[tuple[bytes, str]] | None = None,
+) -> Fingerprint:
+    """Extract a fingerprint. Raises APIError(AI_ERROR) only if every model fails.
+
+    Gemma is the primary model, for its free request-per-day allowance. It is also
+    unreliable in practice -- intermittent 500s and calls that run for over a minute --
+    so a Gemini backup takes over once Gemma has had its attempts. The backup supports
+    real structured output, so it rescues the malformed-JSON case rather than repeating
+    it.
+    """
+    images = images or []
+    primary = settings.gemini_fingerprint_model
+    backup = settings.gemini_fingerprint_fallback_model
+
+    plan: list[tuple[str, bool, int]] = [
+        (primary, False, max(1, settings.fingerprint_max_attempts)),
+    ]
+    if backup and backup != primary:
+        plan.append((backup, True, max(1, settings.fingerprint_fallback_attempts)))
+
+    last_error: Exception | None = None
+    for model, structured, attempts in plan:
+        result, error = _try_model(
+            model, structured, attempts, title, description, images
+        )
+        if result is not None:
+            if model != primary:
+                log.info("Fingerprint served by backup model %s", model)
+            return result
+        last_error = error or last_error
+
+    if last_error is not None and is_quota_error(last_error):
+        raise APIError(
+            AI_ERROR,
+            "The fingerprint models are temporarily out of quota. Please try again later.",
+        ) from last_error
     raise APIError(AI_ERROR, "Could not extract a problem fingerprint.") from last_error

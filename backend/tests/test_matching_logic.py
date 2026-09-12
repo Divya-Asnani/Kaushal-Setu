@@ -338,23 +338,29 @@ def test_a_pending_request_can_be_accepted():
     assert_request_transition("pending", "accepted")
 
 
-# ------------------------------------------------------------- retry behaviour
+# ----------------------------------------------- retry and fallback behaviour
 
 
 class _Boom(Exception):
     """Stands in for a google-genai error carrying a status in its message."""
 
 
-def _patch_call(monkeypatch, responses):
-    """Feed generate_fingerprint a scripted sequence of replies or exceptions."""
+GOOD = '{"issue": "no power", "brand": "Samsung"}'
+
+
+def _script(monkeypatch, responses):
+    """Feed generate_fingerprint a scripted sequence of replies or exceptions.
+
+    Records the model and prompt of every call so tests can assert which model served
+    the request and whether the stricter instruction was appended.
+    """
     from backend.services.ai import fingerprint as fp
 
-    calls = {"n": 0, "prompts": []}
+    calls: list[dict] = []
 
-    def fake_call(contents):
-        index = calls["n"]
-        calls["n"] += 1
-        calls["prompts"].append(contents)
+    def fake_call(model, contents, structured):
+        index = len(calls)
+        calls.append({"model": model, "prompt": contents, "structured": structured})
         item = responses[min(index, len(responses) - 1)]
         if isinstance(item, Exception):
             raise item
@@ -367,56 +373,105 @@ def _patch_call(monkeypatch, responses):
     return calls
 
 
-GOOD = '{"issue": "no power", "brand": "Samsung"}'
+@pytest.fixture
+def models(monkeypatch):
+    from backend.core.config import settings
+
+    monkeypatch.setattr(settings, "gemini_fingerprint_model", "gemma-4-31b-it")
+    monkeypatch.setattr(settings, "gemini_fingerprint_fallback_model", "gemini-3.5-flash-lite")
+    monkeypatch.setattr(settings, "fingerprint_max_attempts", 2)
+    monkeypatch.setattr(settings, "fingerprint_fallback_attempts", 2)
+    return settings
 
 
-def test_a_transient_server_error_is_retried(monkeypatch):
+def test_gemma_serves_the_request_when_it_works(models, monkeypatch):
     from backend.services.ai import fingerprint as fp
 
-    calls = _patch_call(monkeypatch, [_Boom("500 INTERNAL"), GOOD])
+    calls = _script(monkeypatch, [GOOD])
     result = fp.generate_fingerprint("t", "d")
-    assert result.brand == "Samsung"
-    assert calls["n"] == 2
+    assert result.model_used == "gemma-4-31b-it"
+    assert len(calls) == 1, "the backup must not be touched when Gemma succeeds"
 
 
-def test_a_transient_retry_does_not_change_the_prompt(monkeypatch):
-    """A server fault is not the model's fault, so the prompt is left alone."""
+def test_a_transient_server_error_is_retried_on_gemma_first(models, monkeypatch):
     from backend.services.ai import fingerprint as fp
 
-    calls = _patch_call(monkeypatch, [_Boom("503 UNAVAILABLE"), GOOD])
+    calls = _script(monkeypatch, [_Boom("500 INTERNAL"), GOOD])
+    result = fp.generate_fingerprint("t", "d")
+    assert result.model_used == "gemma-4-31b-it"
+    assert [c["model"] for c in calls] == ["gemma-4-31b-it"] * 2
+    assert calls[1]["prompt"] == "", "a server fault must not change the prompt"
+
+
+def test_an_unparseable_reply_is_retried_with_a_stricter_instruction(models, monkeypatch):
+    from backend.services.ai import fingerprint as fp
+
+    calls = _script(monkeypatch, ["I cannot help with that", GOOD])
+    assert fp.generate_fingerprint("t", "d").model_used == "gemma-4-31b-it"
+    assert calls[0]["prompt"] == ""
+    assert "JSON object ONLY" in calls[1]["prompt"]
+
+
+def test_the_backup_takes_over_once_gemma_is_exhausted(models, monkeypatch):
+    """Gemma's real failure mode: repeated 500s. The demo must still get an answer."""
+    from backend.services.ai import fingerprint as fp
+
+    calls = _script(monkeypatch, [_Boom("500 INTERNAL"), _Boom("500 INTERNAL"), GOOD])
+    result = fp.generate_fingerprint("t", "d")
+    assert result.model_used == "gemini-3.5-flash-lite"
+    assert [c["model"] for c in calls] == [
+        "gemma-4-31b-it", "gemma-4-31b-it", "gemini-3.5-flash-lite",
+    ]
+
+
+def test_the_backup_asks_for_enforced_json(models, monkeypatch):
+    from backend.services.ai import fingerprint as fp
+
+    calls = _script(monkeypatch, [_Boom("500"), _Boom("500"), GOOD])
     fp.generate_fingerprint("t", "d")
-    assert calls["prompts"] == ["", ""], "no stricter instruction was appended"
+    assert calls[0]["structured"] is False, "Gemma rejects response_mime_type"
+    assert calls[-1]["structured"] is True, "the backup enforces real JSON"
 
 
-def test_an_unparseable_reply_is_retried_with_a_stricter_instruction(monkeypatch):
+def test_a_gemma_quota_error_moves_straight_to_the_backup(models, monkeypatch):
+    """Repeating a 429 cannot help, so Gemma is abandoned immediately."""
     from backend.services.ai import fingerprint as fp
 
-    calls = _patch_call(monkeypatch, ["I cannot help with that", GOOD])
+    calls = _script(monkeypatch, [_Boom("429 RESOURCE_EXHAUSTED"), GOOD])
     result = fp.generate_fingerprint("t", "d")
-    assert result.brand == "Samsung"
-    assert calls["prompts"][0] == ""
-    assert "JSON object ONLY" in calls["prompts"][1]
+    assert result.model_used == "gemini-3.5-flash-lite"
+    assert len([c for c in calls if c["model"] == "gemma-4-31b-it"]) == 1
 
 
-def test_a_quota_error_is_never_retried(monkeypatch):
-    """Repeating a 429 cannot help and only burns the remaining allowance."""
+def test_an_error_is_raised_only_when_both_models_fail(models, monkeypatch):
     from backend.services.ai import fingerprint as fp
 
-    calls = _patch_call(monkeypatch, [_Boom("429 RESOURCE_EXHAUSTED"), GOOD])
-    with pytest.raises(APIError) as caught:
+    calls = _script(monkeypatch, [_Boom("500 INTERNAL")])
+    with pytest.raises(APIError):
         fp.generate_fingerprint("t", "d")
-    assert calls["n"] == 1
-    assert "quota" in caught.value.message.lower()
+    assert len(calls) == 4, "2 attempts on Gemma, then 2 on the backup"
 
 
-def test_persistent_failure_gives_up_after_the_attempt_limit(monkeypatch):
+def test_running_without_a_backup_is_supported(monkeypatch):
     from backend.core.config import settings
     from backend.services.ai import fingerprint as fp
 
-    calls = _patch_call(monkeypatch, [_Boom("500 INTERNAL")])
+    monkeypatch.setattr(settings, "gemini_fingerprint_model", "gemma-4-31b-it")
+    monkeypatch.setattr(settings, "gemini_fingerprint_fallback_model", "")
+    monkeypatch.setattr(settings, "fingerprint_max_attempts", 2)
+    calls = _script(monkeypatch, [_Boom("500 INTERNAL")])
     with pytest.raises(APIError):
         fp.generate_fingerprint("t", "d")
-    assert calls["n"] == settings.fingerprint_max_attempts
+    assert len(calls) == 2, "Gemma only"
+
+
+def test_exhausted_quota_on_both_models_says_so(models, monkeypatch):
+    from backend.services.ai import fingerprint as fp
+
+    _script(monkeypatch, [_Boom("429 RESOURCE_EXHAUSTED")])
+    with pytest.raises(APIError) as caught:
+        fp.generate_fingerprint("t", "d")
+    assert "quota" in caught.value.message.lower()
 
 
 def test_transient_and_quota_errors_are_told_apart():

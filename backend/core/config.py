@@ -23,9 +23,16 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "gemini-embedding-2"
     embedding_dim: int = 1536
     gemini_fingerprint_model: str = "gemma-4-31b-it"
-    # Gemma has no structured-output mode, so a malformed JSON reply is retried
-    # on the same model with a stricter instruction rather than handed to Gemini.
-    fingerprint_max_attempts: int = 4
+    # Gemma has no structured-output mode, so a malformed JSON reply is retried on
+    # the same model with a stricter instruction; a transient 5xx is retried after a
+    # backoff. Once these attempts are spent the backup model takes over.
+    fingerprint_max_attempts: int = 1
+    # Gemini backup. Supports real structured output and is far more reliable, so it
+    # needs fewer attempts. Set blank to disable and run on Gemma alone.
+    gemini_fingerprint_fallback_model: str = "gemini-3.5-flash-lite"
+    fingerprint_fallback_attempts: int = 2
+    # A single call is cut off after this long; Gemma can otherwise run past a minute.
+    fingerprint_timeout_seconds: int = 20
 
     # Neo4j
     neo4j_uri: str = ""

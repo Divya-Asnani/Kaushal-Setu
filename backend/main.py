@@ -129,6 +129,8 @@ def health() -> dict[str, object]:
         "embedding_dim": settings.embedding_dim,
         "fingerprint_model": settings.gemini_fingerprint_model,
         "fingerprint_max_attempts": settings.fingerprint_max_attempts,
+        "fingerprint_fallback_model": settings.gemini_fingerprint_fallback_model or None,
+        "fingerprint_timeout_seconds": settings.fingerprint_timeout_seconds,
         "neo4j_available": neo4j_client.is_available(),
         "match_weights": settings.match_weights,
     }
