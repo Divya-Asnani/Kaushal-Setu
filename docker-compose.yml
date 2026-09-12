@@ -8,6 +8,7 @@ services:
     # Supabase, Gemini and Neo4j are all hosted services, so the container needs
     # credentials but no sibling containers. env_file keeps secrets out of this file
     # and out of the image.
+    
     env_file:
       - .env
     environment:
@@ -36,3 +37,4 @@ services:
       - "${TESTPAGE_PORT:-8080}:8080"
     depends_on:
       - api
+

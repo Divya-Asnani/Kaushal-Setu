@@ -7,6 +7,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 WORKDIR /app
 
+
 # psycopg[binary] ships wheels, so no compiler is needed for the current requirements.
 # build-essential is here because a future dependency without a wheel would otherwise
 # fail the build with a confusing error.

@@ -4,6 +4,7 @@ Derived from the team design doc. `public` schema, RLS disabled (authorization i
 enforced in FastAPI). Every table has `created_at timestamptz not null default now()`;
 most also have `updated_at`.
 
+
 ## profiles
 - id :: uuid :: PK, FK -> auth.users.id
 - role :: text :: not null default 'customer' :: CHECK in (customer, worker, admin)
