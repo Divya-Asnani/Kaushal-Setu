@@ -21,6 +21,7 @@ from backend.schemas.models import (
 from backend.services.ai import indexing
 from backend.services.graph import neo4j_client
 from backend.services.jobs import lifecycle
+from backend.services.storage import storage
 from backend.services.notifications import notify as notifications
 
 log = logging.getLogger(__name__)
@@ -196,7 +197,7 @@ def submit_completion(
         table("experience_media").insert(
             [
                 {
-                    **e.model_dump(),
+                    **storage.validate_media(storage.EXPERIENCE, e.model_dump()),
                     "experience_id": experience_id,
                     # Evidence is unverified until a customer confirms the outcome.
                     "is_verified": False,

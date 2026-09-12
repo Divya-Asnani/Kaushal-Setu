@@ -19,6 +19,7 @@ this backend reads and writes their schema but does not define it.
 | pgvector similarity search, Neo4j enrichment, hybrid ranking + explanations | done |
 | Service request / job / verification state machines | done |
 | Knowledge Hub semantic search | done |
+| Storage path validation and media metadata rules | done |
 
 ## Gemini instead of OpenAI
 
@@ -118,7 +119,7 @@ development tool, not part of the product.
 .venv/Scripts/python -m pytest
 ```
 
-154 tests, no credentials or network required. `backend/tests/fakes.py` stands in for
+183 tests, no credentials or network required. `backend/tests/fakes.py` stands in for
 Supabase, pgvector and the Gemini models, so everything between the HTTP boundary and
 those three services is the real code path — routers, dependencies, authorization,
 schemas, the matching pipeline.
@@ -137,13 +138,28 @@ Coverage:
 | `test_api_authz.py` | Authentication, the role matrix, ownership boundaries, state-machine guards, the error contract |
 | `test_api_contract.py` | Every documented endpoint is published, nothing undocumented is exposed, response shapes match the spec |
 | `test_seed_and_graph.py` | Seed-fixture consistency, graph enrichment on and off, failure isolation |
+| `test_storage.py` | Bucket resolution, path traversal and URI-scheme rejection, upload limits |
 
 The PRD's Samsung S23 ranking scenario is asserted directly, at both the unit and the
 API level — if that ordering breaks, the product claim breaks.
 
-Not covered: behaviour that only a live project can show — real pgvector index
-behaviour, Supabase Auth, actual Gemma output quality. Use the test page against a
-seeded project for those.
+### Verified against the live project
+
+Confirmed by hand against the team's Supabase project and the Gemini API:
+
+- All 25 tables reachable, and their columns diffed against `docs/schema-reference.md`.
+  That diff is what turned up `service_requests.match_result_id`, which the API had been
+  accepting and silently dropping.
+- Embedding generation and indexing: all existing experiences embedded through
+  `gemini-embedding-2`, with the model name and canonical `source_text` written correctly.
+- Token validation against the project's JWKS endpoint.
+- Fingerprint extraction, including the `customer_stated` / `ai_inferred` provenance
+  marker and the high-risk safety warning.
+
+**Not yet verified: pgvector similarity search**, which needs `DATABASE_URL`. Without it
+those endpoints return a clean `VECTOR_SEARCH_ERROR` rather than failing oddly, but the
+ranking has not been exercised against the real HNSW indexes. That is the one gap
+between this backend and a fully proven end-to-end path.
 
 ## Layout
 
@@ -160,6 +176,7 @@ backend/
   services/graph/            Neo4j enrichment and projection
   services/jobs/             state machines and transitions
   services/notifications/    in-app notifications
+  services/storage/          bucket resolution, path validation, object fetch
   scripts/seed_demo.py
   tests/
 docs/schema-reference.md     columns and CHECK values for all 25 tables
