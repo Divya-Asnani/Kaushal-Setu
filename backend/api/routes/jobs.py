@@ -191,10 +191,12 @@ def submit_completion(
     )
 
     if payload.evidence:
+        # Keeps unset fields: media_type and media_role default here and back NOT NULL
+        # columns, so dropping them on a silent client would be a null violation.
         table("experience_media").insert(
             [
                 {
-                    **e.model_dump(exclude_unset=True),
+                    **e.model_dump(),
                     "experience_id": experience_id,
                     # Evidence is unverified until a customer confirms the outcome.
                     "is_verified": False,

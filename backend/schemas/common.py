@@ -24,7 +24,21 @@ VISIBILITY = ("draft", "published", "archived")
 
 
 class Schema(BaseModel):
+    """Base for request bodies. Unknown fields are rejected so typos surface early."""
+
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class Out(BaseModel):
+    """Base for responses.
+
+    Responses are frequently built by splatting a database row, which carries columns
+    the schema does not publish (``updated_at``, internal ids). Ignoring extras keeps
+    a new column from turning into a 500, while the declared fields still define
+    exactly what is serialised back to the client.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class Page(BaseModel, Generic[T]):

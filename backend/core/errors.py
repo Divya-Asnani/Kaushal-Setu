@@ -1,12 +1,16 @@
 """Standard error contract (FastAPI spec section 5)."""
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+log = logging.getLogger(__name__)
 
 AUTH_REQUIRED = "AUTH_REQUIRED"
 FORBIDDEN = "FORBIDDEN"
@@ -84,6 +88,46 @@ def register_exception_handlers(app: FastAPI) -> None:
                 VALIDATION_ERROR,
                 "Request validation failed.",
                 {"errors": exc.errors()},
+                request,
+            ),
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        """Route-level errors (unknown path, wrong method) use the contract too.
+
+        Without this a client sees FastAPI's default ``{"detail": ...}`` for a typo'd
+        URL and the documented envelope everywhere else.
+        """
+        code = {
+            401: AUTH_REQUIRED,
+            403: FORBIDDEN,
+            404: RESOURCE_NOT_FOUND,
+            405: VALIDATION_ERROR,
+            409: CONFLICT,
+        }.get(exc.status_code, INTERNAL_ERROR)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_body(code, str(exc.detail), {}, request),
+            headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        """Keep unexpected failures inside the documented error contract.
+
+        The message is deliberately generic: the traceback goes to the log, and the
+        client gets the request id to quote rather than internal detail.
+        """
+        log.exception(
+            "Unhandled error on %s %s", request.method, request.url.path
+        )
+        return JSONResponse(
+            status_code=500,
+            content=_body(
+                INTERNAL_ERROR,
+                "An unexpected error occurred. Quote the request id when reporting it.",
+                {},
                 request,
             ),
         )

@@ -29,11 +29,17 @@ The frozen spec named `text-embedding-3-small`. The team runs on Gemini, so:
   no migration. Google only pre-normalises its full 3072-dimension output, so truncated
   vectors are L2-normalised in `services/ai/embeddings.py` before storage; without that,
   cosine distances would not be comparable between rows.
-- **Fingerprint extraction** — `gemma-3-27b-it` by default, for its large free daily
-  request allowance. Gemma has no structured-output mode, so JSON is requested in the
-  prompt and parsed defensively; on a parse failure or a quota error the request falls
-  back to `gemini-2.5-flash`, which enforces a JSON response. Both models are
-  environment variables.
+- **Fingerprint extraction** — `gemma-3-27b-it`, for its large free daily request
+  allowance. Gemma has no structured-output mode, so JSON is requested in the prompt and
+  parsed defensively; a malformed reply is retried on the same model with a stricter
+  instruction (`FINGERPRINT_MAX_ATTEMPTS`, default 3). A quota error is not retried,
+  because repeating the call cannot help and only burns the remaining allowance.
+
+> **Your API key must be an AI Studio key.** Gemma is served to keys from
+> [aistudio.google.com/apikey](https://aistudio.google.com/apikey), which look like
+> `AIza…`. A Google Cloud / Code Assist key (`AQ.…`) returns 404 for every Gemma model
+> and only exposes `gemini-2.5-flash`, whose rate limit is low enough to hit during a
+> demo. `GET /health` reports the configured model; if fingerprinting 404s, this is why.
 
 `experience_embeddings.embedding_model` has a column default of
 `'text-embedding-3-small'` from the original spec. Every insert writes the real model
@@ -59,7 +65,7 @@ See `.env.example`. The ones without which nothing works:
 - `DATABASE_URL` — pgvector search only. PostgREST cannot express a vector ordering,
   so similarity queries use a direct connection; everything else goes through the
   Supabase client.
-- `GEMINI_API_KEY` — fingerprints and embeddings.
+- `GEMINI_API_KEY` — fingerprints and embeddings. Must be an AI Studio key (see above).
 - `SUPABASE_JWT_SECRET` — only for legacy HS256 projects. Leave blank and tokens are
   verified against the project's JWKS instead.
 
@@ -99,14 +105,32 @@ development tool, not part of the product.
 .venv/Scripts/python -m pytest
 ```
 
-37 tests covering the logic that does not need a live database: JSON extraction from
-untidy model output, fingerprint coercion and provenance rules, safety detection,
-canonical text, the scoring functions, and both state machines. The PRD's Samsung S23
-ranking scenario is asserted directly — if that ordering breaks, the product claim
-breaks.
+154 tests, no credentials or network required. `backend/tests/fakes.py` stands in for
+Supabase, pgvector and the Gemini models, so everything between the HTTP boundary and
+those three services is the real code path — routers, dependencies, authorization,
+schemas, the matching pipeline.
 
-Live-database behaviour is not covered by these; use the test page against a seeded
-project for that.
+The fake database is deliberately strict: it enforces the NOT NULL columns, CHECK value
+sets and numeric ranges recorded in `docs/schema-reference.md`. A write the real
+PostgreSQL schema would reject fails here too, which is how the API is checked against
+the documented schema without a live project.
+
+Coverage:
+
+| File | What it covers |
+|---|---|
+| `test_matching_logic.py` | JSON extraction from untidy model output, fingerprint coercion and provenance, safety detection, canonical text, scoring functions, state machines |
+| `test_api_golden_path.py` | The whole customer journey end to end, plus fingerprint reuse, corrections, request expiry, disputes and status history |
+| `test_api_authz.py` | Authentication, the role matrix, ownership boundaries, state-machine guards, the error contract |
+| `test_api_contract.py` | Every documented endpoint is published, nothing undocumented is exposed, response shapes match the spec |
+| `test_seed_and_graph.py` | Seed-fixture consistency, graph enrichment on and off, failure isolation |
+
+The PRD's Samsung S23 ranking scenario is asserted directly, at both the unit and the
+API level — if that ordering breaks, the product claim breaks.
+
+Not covered: behaviour that only a live project can show — real pgvector index
+behaviour, Supabase Auth, actual Gemma output quality. Use the test page against a
+seeded project for those.
 
 ## Layout
 

@@ -30,20 +30,25 @@ def write_experience_children(
     outcomes: list[Any],
     skill_ids: list[str],
 ) -> None:
-    """Insert the normalised child rows for an experience."""
+    """Insert the normalised child rows for an experience.
+
+    These dumps deliberately keep unset fields. The schema defaults here
+    (``importance_score``, ``outcome_type``, ``success_status``) back NOT NULL columns,
+    so dropping them because the client stayed silent would produce a null violation.
+    """
     if contexts:
         table("experience_contexts").insert(
-            [{**c.model_dump(exclude_unset=True), "experience_id": experience_id} for c in contexts]
+            [{**c.model_dump(), "experience_id": experience_id} for c in contexts]
         ).execute()
     if actions:
         table("experience_actions").insert(
-            [{**a.model_dump(exclude_unset=True), "experience_id": experience_id} for a in actions]
+            [{**a.model_dump(), "experience_id": experience_id} for a in actions]
         ).execute()
     if outcomes:
         table("experience_outcomes").insert(
             [
                 {
-                    **o.model_dump(exclude_unset=True),
+                    **o.model_dump(),
                     "experience_id": experience_id,
                     # Only a customer verification may set this; never the author.
                     "customer_confirmed": False,

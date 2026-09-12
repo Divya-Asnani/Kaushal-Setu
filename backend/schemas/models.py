@@ -6,15 +6,12 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from backend.schemas.common import (
-    Address,
-    Schema,
-)
+from backend.schemas.common import Address, Out, Schema
 
 # --------------------------------------------------------------------------- profile
 
 
-class ProfileOut(Schema):
+class ProfileOut(Out):
     id: str
     role: str
     display_name: str
@@ -32,7 +29,7 @@ class ProfileUpdate(Schema):
 # --------------------------------------------------------------------------- workers
 
 
-class SkillOut(Schema):
+class SkillOut(Out):
     id: str
     name: str
     category: str | None = None
@@ -40,7 +37,7 @@ class SkillOut(Schema):
     is_primary: bool | None = None
 
 
-class WorkerOut(Schema):
+class WorkerOut(Out):
     user_id: str
     professional_title: str
     bio: str | None = None
@@ -84,7 +81,7 @@ class CertificateIn(Schema):
     certificate_url: str | None = None
 
 
-class CertificateOut(Schema):
+class CertificateOut(Out):
     id: str
     certificate_name: str
     issuing_organization: str | None = None
@@ -117,7 +114,7 @@ class ProblemMediaIn(Schema):
     caption: str | None = None
 
 
-class ProblemOut(Schema):
+class ProblemOut(Out):
     id: str
     customer_id: str | None = None
     title: str
@@ -142,7 +139,7 @@ class FingerprintRequest(Schema):
     regenerate: bool = False
 
 
-class FingerprintOut(Schema):
+class FingerprintOut(Out):
     id: str | None = None
     problem_id: str
     device_type: str | None = None
@@ -182,7 +179,7 @@ class FingerprintConfirm(Schema):
 # --------------------------------------------------------------------------- matching
 
 
-class MatchItem(Schema):
+class MatchItem(Out):
     match_result_id: str | None = None
     worker_id: str
     rank_position: int
@@ -196,7 +193,7 @@ class MatchItem(Schema):
     within_service_radius: bool = True
 
 
-class MatchesOut(Schema):
+class MatchesOut(Out):
     problem_id: str
     items: list[MatchItem] = []
     candidate_pool_size: int = 0
@@ -264,7 +261,7 @@ class ExperienceUpdate(Schema):
     experience_status: Literal["draft", "submitted", "archived"] | None = None
 
 
-class ExperienceOut(Schema):
+class ExperienceOut(Out):
     id: str
     worker_id: str | None = None
     title: str
@@ -280,7 +277,7 @@ class ExperienceOut(Schema):
     skills: list[str] = []
 
 
-class SimilarExperience(Schema):
+class SimilarExperience(Out):
     experience_id: str
     similarity: float
     worker_id: str
@@ -303,7 +300,7 @@ class ServiceRequestPatch(Schema):
     worker_response: str | None = Field(default=None, max_length=1000)
 
 
-class ServiceRequestOut(Schema):
+class ServiceRequestOut(Out):
     id: str
     problem_id: str | None = None
     worker_id: str | None = None
@@ -325,7 +322,7 @@ class JobStatusPatch(Schema):
     notes: str | None = Field(default=None, max_length=1000)
 
 
-class JobOut(Schema):
+class JobOut(Out):
     id: str
     service_request_id: str | None = None
     status: str
@@ -345,7 +342,7 @@ class CompletionIn(Schema):
     skill_ids: list[str] = []
 
 
-class CompletionOut(Schema):
+class CompletionOut(Out):
     job_id: str
     status: str
     experience_id: str
@@ -361,7 +358,7 @@ class DisputeIn(Schema):
     comments: str = Field(min_length=1, max_length=2000)
 
 
-class VerificationOut(Schema):
+class VerificationOut(Out):
     verification_id: str
     verification_status: str
     verification_score: float | None = None
@@ -375,7 +372,7 @@ class FeedbackIn(Schema):
     feedback_text: str | None = Field(default=None, max_length=2000)
 
 
-class FeedbackOut(Schema):
+class FeedbackOut(Out):
     id: str
     job_id: str
     customer_id: str | None = None
@@ -408,7 +405,7 @@ class KnowledgeCaseUpdate(Schema):
     visibility_status: Literal["draft", "published", "archived"] | None = None
 
 
-class KnowledgeCaseOut(Schema):
+class KnowledgeCaseOut(Out):
     id: str
     worker_id: str | None = None
     experience_id: str | None = None
@@ -424,7 +421,7 @@ class KnowledgeCaseOut(Schema):
     media: list[dict[str, Any]] = []
 
 
-class SimilarKnowledgeCase(Schema):
+class SimilarKnowledgeCase(Out):
     knowledge_case_id: str
     similarity: float
     title: str
@@ -436,7 +433,7 @@ class SimilarKnowledgeCase(Schema):
 # ------------------------------------------------------------------------ notifications
 
 
-class NotificationOut(Schema):
+class NotificationOut(Out):
     id: str
     notification_type: str
     title: str

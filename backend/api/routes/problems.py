@@ -159,7 +159,8 @@ def add_problem_media(
     problem = load_problem(problem_id)
     assert_problem_access(problem, user)
 
-    row = clean(payload.model_dump(exclude_unset=True))
+    # media_type defaults here and backs a NOT NULL column, so unset fields are kept.
+    row = clean(payload.model_dump())
     row["problem_id"] = problem_id
     created = rows(table("problem_media").insert(row).execute())[0]
     return {**created, "id": str(created["id"])}
