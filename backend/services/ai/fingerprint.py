@@ -256,27 +256,35 @@ def _coerce(payload: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
-def _build_contents(title: str, description: str, images: list[tuple[bytes, str]]):
+def _build_contents(
+    title: str, description: str, images: list[tuple[bytes, str]], nudge: str = ""
+):
     from google.genai import types
 
     prompt = _PROMPT.replace("__TITLE__", title or "").replace(
         "__DESCRIPTION__", description or ""
-    )
+    ) + nudge
     parts: list[Any] = [types.Part.from_text(text=prompt)]
     for data, mime_type in images:
         parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
     return [types.Content(role="user", parts=parts)]
 
 
-def _call_model(model: str, contents: Any, use_schema: bool) -> str:
+_RETRY_NUDGE = (
+    "\n\nIMPORTANT: your previous reply could not be parsed. Reply with the JSON object "
+    "ONLY. No explanation, no markdown fences, nothing before or after the object."
+)
+
+
+def _call_model(contents: Any) -> str:
     from google.genai import types
 
-    config = types.GenerateContentConfig(temperature=0.1, max_output_tokens=1200)
-    if use_schema:
-        # Gemma rejects this; only the Gemini fallback asks for enforced JSON.
-        config.response_mime_type = "application/json"
+    # No response_mime_type here: Gemma does not support structured output, and this
+    # pipeline deliberately stays on Gemma for its free request-per-day allowance.
     response = get_client().models.generate_content(
-        model=model, contents=contents, config=config
+        model=settings.gemini_fingerprint_model,
+        contents=contents,
+        config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=1200),
     )
     return (response.text or "").strip()
 
@@ -286,29 +294,39 @@ def generate_fingerprint(
     description: str,
     images: list[tuple[bytes, str]] | None = None,
 ) -> Fingerprint:
-    """Extract a fingerprint, falling back across models. Raises APIError on failure."""
-    contents = _build_contents(title, description, images or [])
+    """Extract a fingerprint using Gemma. Raises APIError(AI_ERROR) if it cannot.
 
-    attempts = [
-        (settings.gemini_fingerprint_model, False),
-        (settings.gemini_fingerprint_fallback_model, True),
-    ]
+    Because Gemma cannot be forced to emit JSON, a malformed reply is retried on the
+    same model with a stricter instruction. A quota error is not retried -- repeating
+    the call would not help and only burns the remaining allowance.
+    """
+    model = settings.gemini_fingerprint_model
     last_error: Exception | None = None
-    for model, use_schema in attempts:
-        if not model:
-            continue
+
+    for attempt in range(max(1, settings.fingerprint_max_attempts)):
+        contents = _build_contents(
+            title, description, images or [], nudge=_RETRY_NUDGE if attempt else ""
+        )
         try:
-            payload = _extract_json(_call_model(model, contents, use_schema))
+            payload = _extract_json(_call_model(contents))
             clean = _coerce(payload)
             return Fingerprint(
                 **clean,
                 safety_warning=detect_safety_risk(title, description, clean.get("issue")),
                 model_used=model,
-                raw_ai_output={"model": model, "response": payload},
+                raw_ai_output={"model": model, "attempt": attempt + 1, "response": payload},
             )
         except Exception as exc:
             last_error = exc
-            reason = "quota" if is_quota_error(exc) else type(exc).__name__
-            log.warning("Fingerprint model %s failed (%s)", model, reason)
+            if is_quota_error(exc):
+                log.warning("Fingerprint model %s is out of quota", model)
+                raise APIError(
+                    AI_ERROR,
+                    "The fingerprint model is temporarily out of quota. Please try again later.",
+                ) from exc
+            log.warning(
+                "Fingerprint attempt %d/%d on %s failed (%s)",
+                attempt + 1, settings.fingerprint_max_attempts, model, type(exc).__name__,
+            )
 
     raise APIError(AI_ERROR, "Could not extract a problem fingerprint.") from last_error

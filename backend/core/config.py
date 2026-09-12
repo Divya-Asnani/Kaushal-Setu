@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dim: int = 1536
     gemini_fingerprint_model: str = "gemma-3-27b-it"
-    gemini_fingerprint_fallback_model: str = "gemini-2.5-flash"
+    # Gemma has no structured-output mode, so a malformed JSON reply is retried
+    # on the same model with a stricter instruction rather than handed to Gemini.
+    fingerprint_max_attempts: int = 3
 
     # Neo4j
     neo4j_uri: str = ""
