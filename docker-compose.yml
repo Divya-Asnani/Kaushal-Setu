@@ -1,0 +1,38 @@
+services:
+  api:
+    build: .
+    image: ibolt-api:latest
+    container_name: ibolt-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    # Supabase, Gemini and Neo4j are all hosted services, so the container needs
+    # credentials but no sibling containers. env_file keeps secrets out of this file
+    # and out of the image.
+    env_file:
+      - .env
+    environment:
+      # Inside a container "localhost" is the container itself, so a Neo4j or database
+      # URL pointing at the host machine must use host.docker.internal instead.
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # Serves testpage/index.html so the pipeline can be driven from a browser.
+  # Start it with:  docker compose --profile testpage up
+  testpage:
+    image: python:3.11-slim
+    container_name: ibolt-testpage
+    profiles: ["testpage"]
+    working_dir: /srv
+    volumes:
+      - ./testpage:/srv:ro
+    command: ["python", "-m", "http.server", "8080"]
+    ports:
+      - "${TESTPAGE_PORT:-8080}:8080"
+    depends_on:
+      - api

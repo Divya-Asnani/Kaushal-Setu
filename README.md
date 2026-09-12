@@ -25,11 +25,13 @@ this backend reads and writes their schema but does not define it.
 
 The frozen spec named `text-embedding-3-small`. The team runs on Gemini, so:
 
-- **Embeddings** — `gemini-embedding-001` with `output_dimensionality=1536`. The
-  dimension is unchanged, so the existing `vector(1536)` columns and HNSW indexes need
-  no migration. Google only pre-normalises its full 3072-dimension output, so truncated
-  vectors are L2-normalised in `services/ai/embeddings.py` before storage; without that,
-  cosine distances would not be comparable between rows.
+- **Embeddings** — `gemini-embedding-2` at `output_dimensionality=1536`. The dimension
+  is unchanged, so the existing `vector(1536)` columns and HNSW indexes need no
+  migration. Vectors are L2-normalised in `services/ai/embeddings.py`. That step is not
+  cosmetic: the older `gemini-embedding-001` returns a vector of norm 0.69 at 1536
+  dimensions, and without normalising, cosine distances would not be comparable between
+  rows. `gemini-embedding-2` already returns unit vectors, so the step is now a cheap
+  safeguard rather than a correction.
 - **Fingerprint extraction** — `gemma-4-31b-it` first, for its large free daily
   allowance, with `gemini-3.5-flash-lite` as the backup. Gemma has no structured-output
   mode, so its JSON is parsed from a prompted schema and a malformed reply is retried
@@ -40,26 +42,59 @@ The frozen spec named `text-embedding-3-small`. The team runs on Gemini, so:
 
 > **Gemma is currently unreliable on this endpoint.** Measured live: intermittent
 > `500 INTERNAL` on roughly half of calls, and 37–93 s latency when it does answer.
-> Because a demo cannot wait 90 s, the timeout is 20 s — which means Gemma rarely wins
-> even when it would eventually succeed, and the backup serves most requests at 2–4 s.
-> The ordering is deliberate: if Gemma stabilises it takes over again automatically and
-> the backup's smaller daily budget stops being spent. Nothing needs changing for that
-> to happen. Gemma has no structured-output mode, so JSON is requested in the prompt and
-  parsed defensively; a malformed reply is retried on the same model with a stricter
-  instruction (`FINGERPRINT_MAX_ATTEMPTS`, default 3). A quota error is not retried,
-  because repeating the call cannot help and only burns the remaining allowance.
+> Because a demo cannot wait 90 s the timeout is 20 s, which means Gemma rarely wins
+> even when it would eventually succeed — in live testing the backup served every
+> request, at 2–4 s. The ordering is still deliberate: if Gemma stabilises it takes over
+> again automatically and the backup's smaller daily budget stops being spent. Nothing
+> needs changing for that to happen. To favour Gemma instead, raise
+> `FINGERPRINT_TIMEOUT_SECONDS`.
 
-> **Your API key must be an AI Studio key.** Gemma is served to keys from
-> [aistudio.google.com/apikey](https://aistudio.google.com/apikey), which look like
-> `AIza…`. A Google Cloud / Code Assist key (`AQ.…`) returns 404 for every Gemma model
-> and only exposes `gemini-2.5-flash`, whose rate limit is low enough to hit during a
-> demo. `GET /health` reports the configured model; if fingerprinting 404s, this is why.
+**Model names vary by key.** Not every key exposes every model, and `ListModels` is
+unavailable on some, so the reachable set has to be probed. On the team's current key
+`gemma-4-31b-it`, `gemini-3.5-flash-lite` and `gemini-embedding-2` all work, while the
+older `gemma-3-*` names return 404. `GET /health` reports which models are configured;
+if fingerprinting 404s, the model name is the first thing to check.
 
 `experience_embeddings.embedding_model` has a column default of
 `'text-embedding-3-small'` from the original spec. Every insert writes the real model
 name explicitly, so the default is never relied on.
 
 ## Running it
+
+### Docker (recommended)
+
+```bash
+cp .env.example .env      # then fill it in
+docker compose up
+```
+
+The API is on <http://localhost:8000>, docs at `/docs`, health at `/health`. Add `-d`
+to detach, `docker compose logs -f api` to follow, `docker compose down` to stop.
+
+Supabase, Gemini and Neo4j are all hosted services, so nothing else runs in compose —
+the container needs credentials, not sibling containers. `.env` is passed in via
+`env_file` and is excluded from the build context by `.dockerignore`, so **no secret is
+ever baked into an image layer**. The container runs as a non-root user.
+
+Change the published port with `API_PORT=9000 docker compose up`.
+
+To also serve the test page at <http://localhost:8080>:
+
+```bash
+docker compose --profile testpage up
+```
+
+> If you point `DATABASE_URL` or `NEO4J_URI` at a service on your own machine, use
+> `host.docker.internal` rather than `localhost` — inside a container `localhost` is the
+> container itself.
+
+Run the tests inside the image:
+
+```bash
+docker compose run --rm --entrypoint python api -m pytest -q
+```
+
+### Without Docker
 
 ```bash
 python -m venv .venv
@@ -181,6 +216,8 @@ backend/
   tests/
 docs/schema-reference.md     columns and CHECK values for all 25 tables
 testpage/index.html
+Dockerfile                   multi-stage build, non-root runtime
+docker-compose.yml           the api service, plus an optional testpage profile
 ```
 
 ## Design notes worth knowing
