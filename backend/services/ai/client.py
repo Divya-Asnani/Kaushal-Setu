@@ -25,5 +25,19 @@ def get_client():
 
 
 def is_quota_error(exc: Exception) -> bool:
+    """True for 429 RESOURCE_EXHAUSTED, the API's rate-limit signal."""
     text = f"{type(exc).__name__} {exc}".lower()
     return any(k in text for k in ("429", "resource_exhausted", "quota", "rate limit"))
+
+
+def is_transient_server_error(exc: Exception) -> bool:
+    """True for 500/503-class faults on Google's side.
+
+    These are worth retrying, unlike a quota error: the same request often succeeds a
+    moment later. Gemma in particular returns 500 INTERNAL intermittently.
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        k in text
+        for k in ("500", "503", "internal", "unavailable", "overloaded", "deadline")
+    )

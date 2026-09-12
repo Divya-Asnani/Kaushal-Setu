@@ -10,25 +10,34 @@ are enforced here rather than left to the prompt alone:
   * High-risk electrical wording raises a safety warning telling the user to involve
     a qualified professional.
 
-Gemma has a large free daily allowance but no structured-output mode, so JSON is
-requested in the prompt and parsed defensively. If that fails, or the model is out of
-quota, the request falls back to a Gemini model with real schema enforcement.
+Extraction runs entirely on Gemma. Gemma has no structured-output mode, so JSON is
+requested in the prompt and parsed defensively, and it returns 500 INTERNAL
+intermittently, so server-side faults are retried with backoff. See
+``generate_fingerprint`` for how the two failure modes are told apart.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from backend.core.config import settings
 from backend.core.errors import AI_ERROR, APIError
-from backend.services.ai.client import get_client, is_quota_error
+from backend.services.ai.client import (
+    get_client,
+    is_quota_error,
+    is_transient_server_error,
+)
 
 log = logging.getLogger(__name__)
 
 FINGERPRINT_VERSION = "v1"
+
+# Base delay between retries of a server-side fault; doubles each attempt.
+_BACKOFF_SECONDS = 1.5
 
 STATED = "customer_stated"
 INFERRED = "ai_inferred"
@@ -296,18 +305,24 @@ def generate_fingerprint(
 ) -> Fingerprint:
     """Extract a fingerprint using Gemma. Raises APIError(AI_ERROR) if it cannot.
 
-    Because Gemma cannot be forced to emit JSON, a malformed reply is retried on the
-    same model with a stricter instruction. A quota error is not retried -- repeating
-    the call would not help and only burns the remaining allowance.
+    Two different failures are retried for different reasons:
+
+      * Gemma cannot be forced to emit JSON, so an unparseable reply is retried
+        immediately with a stricter instruction appended.
+      * Gemma returns 500 INTERNAL intermittently. That is a server-side fault, so the
+        same request is retried after a short backoff without changing the prompt.
+
+    A quota error (429) is never retried: repeating the call cannot help and only burns
+    the remaining allowance.
     """
     model = settings.gemini_fingerprint_model
+    attempts = max(1, settings.fingerprint_max_attempts)
     last_error: Exception | None = None
+    nudge = ""
 
-    for attempt in range(max(1, settings.fingerprint_max_attempts)):
-        contents = _build_contents(
-            title, description, images or [], nudge=_RETRY_NUDGE if attempt else ""
-        )
+    for attempt in range(attempts):
         try:
+            contents = _build_contents(title, description, images or [], nudge=nudge)
             payload = _extract_json(_call_model(contents))
             clean = _coerce(payload)
             return Fingerprint(
@@ -318,15 +333,27 @@ def generate_fingerprint(
             )
         except Exception as exc:
             last_error = exc
+
             if is_quota_error(exc):
                 log.warning("Fingerprint model %s is out of quota", model)
                 raise APIError(
                     AI_ERROR,
                     "The fingerprint model is temporarily out of quota. Please try again later.",
                 ) from exc
+
+            transient = is_transient_server_error(exc)
             log.warning(
-                "Fingerprint attempt %d/%d on %s failed (%s)",
-                attempt + 1, settings.fingerprint_max_attempts, model, type(exc).__name__,
+                "Fingerprint attempt %d/%d on %s failed (%s%s)",
+                attempt + 1, attempts, model, type(exc).__name__,
+                ", transient" if transient else "",
             )
+
+            if attempt < attempts - 1:
+                if transient:
+                    # Server-side fault: same prompt, brief backoff.
+                    time.sleep(_BACKOFF_SECONDS * (2**attempt))
+                else:
+                    # Bad output: same model, stricter instruction.
+                    nudge = _RETRY_NUDGE
 
     raise APIError(AI_ERROR, "Could not extract a problem fingerprint.") from last_error

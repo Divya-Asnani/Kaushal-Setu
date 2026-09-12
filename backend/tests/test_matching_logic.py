@@ -336,3 +336,93 @@ def test_an_accepted_request_cannot_change_again():
 
 def test_a_pending_request_can_be_accepted():
     assert_request_transition("pending", "accepted")
+
+
+# ------------------------------------------------------------- retry behaviour
+
+
+class _Boom(Exception):
+    """Stands in for a google-genai error carrying a status in its message."""
+
+
+def _patch_call(monkeypatch, responses):
+    """Feed generate_fingerprint a scripted sequence of replies or exceptions."""
+    from backend.services.ai import fingerprint as fp
+
+    calls = {"n": 0, "prompts": []}
+
+    def fake_call(contents):
+        index = calls["n"]
+        calls["n"] += 1
+        calls["prompts"].append(contents)
+        item = responses[min(index, len(responses) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(fp, "_call_model", fake_call)
+    monkeypatch.setattr(fp, "_build_contents",
+                        lambda title, desc, images, nudge="": nudge)
+    monkeypatch.setattr(fp.time, "sleep", lambda _s: None)
+    return calls
+
+
+GOOD = '{"issue": "no power", "brand": "Samsung"}'
+
+
+def test_a_transient_server_error_is_retried(monkeypatch):
+    from backend.services.ai import fingerprint as fp
+
+    calls = _patch_call(monkeypatch, [_Boom("500 INTERNAL"), GOOD])
+    result = fp.generate_fingerprint("t", "d")
+    assert result.brand == "Samsung"
+    assert calls["n"] == 2
+
+
+def test_a_transient_retry_does_not_change_the_prompt(monkeypatch):
+    """A server fault is not the model's fault, so the prompt is left alone."""
+    from backend.services.ai import fingerprint as fp
+
+    calls = _patch_call(monkeypatch, [_Boom("503 UNAVAILABLE"), GOOD])
+    fp.generate_fingerprint("t", "d")
+    assert calls["prompts"] == ["", ""], "no stricter instruction was appended"
+
+
+def test_an_unparseable_reply_is_retried_with_a_stricter_instruction(monkeypatch):
+    from backend.services.ai import fingerprint as fp
+
+    calls = _patch_call(monkeypatch, ["I cannot help with that", GOOD])
+    result = fp.generate_fingerprint("t", "d")
+    assert result.brand == "Samsung"
+    assert calls["prompts"][0] == ""
+    assert "JSON object ONLY" in calls["prompts"][1]
+
+
+def test_a_quota_error_is_never_retried(monkeypatch):
+    """Repeating a 429 cannot help and only burns the remaining allowance."""
+    from backend.services.ai import fingerprint as fp
+
+    calls = _patch_call(monkeypatch, [_Boom("429 RESOURCE_EXHAUSTED"), GOOD])
+    with pytest.raises(APIError) as caught:
+        fp.generate_fingerprint("t", "d")
+    assert calls["n"] == 1
+    assert "quota" in caught.value.message.lower()
+
+
+def test_persistent_failure_gives_up_after_the_attempt_limit(monkeypatch):
+    from backend.core.config import settings
+    from backend.services.ai import fingerprint as fp
+
+    calls = _patch_call(monkeypatch, [_Boom("500 INTERNAL")])
+    with pytest.raises(APIError):
+        fp.generate_fingerprint("t", "d")
+    assert calls["n"] == settings.fingerprint_max_attempts
+
+
+def test_transient_and_quota_errors_are_told_apart():
+    from backend.services.ai.client import is_quota_error, is_transient_server_error
+
+    assert is_transient_server_error(_Boom("500 INTERNAL. Internal error encountered."))
+    assert is_transient_server_error(_Boom("503 UNAVAILABLE"))
+    assert not is_quota_error(_Boom("500 INTERNAL"))
+    assert is_quota_error(_Boom("429 RESOURCE_EXHAUSTED"))

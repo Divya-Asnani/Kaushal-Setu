@@ -11,6 +11,8 @@ most also have `updated_at`.
 - phone :: text :: nullable
 - avatar_url :: text :: nullable
 - is_active :: boolean :: not null default true
+- created_at :: timestamptz :: not null default now()
+- updated_at :: timestamptz :: not null default now()
 
 
 ## worker_profiles
@@ -91,6 +93,7 @@ most also have `updated_at`.
 - created_at :: timestamptz :: NOT NULL :: default now()
 
 ## problem_fingerprints
+- id :: uuid :: PRIMARY KEY :: default gen_random_uuid()
 - problem_id :: uuid :: NOT NULL UNIQUE FOREIGN KEY :: -> public.problems(id)
 - device_type :: text :: Nullable
 - brand :: text :: Nullable

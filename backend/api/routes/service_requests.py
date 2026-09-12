@@ -32,6 +32,9 @@ def _to_out(row: dict[str, Any]) -> ServiceRequestOut:
         problem_id=str(row["problem_id"]),
         worker_id=str(row["worker_id"]),
         status=row.get("status") or "pending",
+        match_result_id=(
+            str(row["match_result_id"]) if row.get("match_result_id") else None
+        ),
         customer_message=row.get("customer_message"),
         worker_response=row.get("worker_response"),
         requested_at=row.get("requested_at"),
@@ -96,19 +99,35 @@ def create_service_request(
             {"service_request_id": str(duplicate[0]["id"])},
         )
 
-    created = rows(
-        table("service_requests")
-        .insert(
-            {
-                "problem_id": payload.problem_id,
-                "worker_id": payload.worker_id,
-                "status": "pending",
-                "customer_message": payload.customer_message,
-                "expires_at": lifecycle.request_expiry(),
-            }
+    row: dict[str, Any] = {
+        "problem_id": payload.problem_id,
+        "worker_id": payload.worker_id,
+        "status": "pending",
+        "customer_message": payload.customer_message,
+        "expires_at": lifecycle.request_expiry(),
+    }
+    if payload.match_result_id:
+        # Keeps the audit link from a request back to the ranking that produced it,
+        # so the reason a customer chose this worker survives after the fact.
+        match = one_or_none(
+            table("match_results")
+            .select("id, problem_id, worker_id")
+            .eq("id", payload.match_result_id)
+            .limit(1)
+            .execute()
         )
-        .execute()
-    )[0]
+        if match is None:
+            raise not_found("Match result")
+        if str(match["problem_id"]) != str(payload.problem_id) or str(
+            match["worker_id"]
+        ) != str(payload.worker_id):
+            raise APIError(
+                CONFLICT,
+                "That match result belongs to a different problem or worker.",
+            )
+        row["match_result_id"] = payload.match_result_id
+
+    created = rows(table("service_requests").insert(row).execute())[0]
 
     table("problems").update({"status": "requested"}).eq("id", payload.problem_id).execute()
     notifications.notify(

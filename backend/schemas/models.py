@@ -304,6 +304,7 @@ class ServiceRequestOut(Out):
     id: str
     problem_id: str | None = None
     worker_id: str | None = None
+    match_result_id: str | None = None
     status: str
     customer_message: str | None = None
     worker_response: str | None = None
