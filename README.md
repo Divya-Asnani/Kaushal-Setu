@@ -211,6 +211,13 @@ Confirmed by hand against the team's Supabase project and the Gemini API:
   slightly closer unverified one.
 - The full matching pipeline end to end: problem to fingerprint to embedding to
   pgvector retrieval to ranking to persisted `match_results` with explanations.
+- The golden path driven over HTTP against the Docker container, authenticated with a
+  real Supabase-issued JWT: `/me`, `/problems`, `/problems/{id}/fingerprint`,
+  `/problems/{id}/matches`, `/experiences/similar`, `/notifications`, `/skills`.
+  Fingerprint ~5 s, matching ~7 s over a 15-candidate pool.
+
+The Session pooler host is what makes that work inside Docker; the direct host is
+IPv6-only and unreachable from a container.
 
 ## Layout
 
