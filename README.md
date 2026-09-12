@@ -112,8 +112,20 @@ See `.env.example`. The ones without which nothing works:
 
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — all CRUD.
 - `DATABASE_URL` — pgvector search only. PostgREST cannot express a vector ordering,
-  so similarity queries use a direct connection; everything else goes through the
-  Supabase client.
+  so similarity queries use a direct Postgres connection; everything else goes through
+  the Supabase client. It points at the *same* Supabase database as `SUPABASE_URL` —
+  only the protocol differs.
+
+  **Use the Session pooler string, not the direct one.** Supabase's direct host,
+  `db.<ref>.supabase.co`, resolves to IPv6 only. That works from a machine with IPv6
+  but fails from inside a Docker container on a default bridge network, with
+  `Network is unreachable`. The Session pooler
+  (`postgresql://postgres.<ref>:<password>@<region>.pooler.supabase.com:5432/postgres`)
+  is reachable over IPv4 and works in both. Percent-encode special characters in the
+  password — `@` becomes `%40`.
+
+  If it is unreachable, vector search returns `VECTOR_SEARCH_ERROR` with that hint in
+  `details` and the rest of the API keeps working.
 - `GEMINI_API_KEY` — fingerprints and embeddings. Must be an AI Studio key (see above).
 - `SUPABASE_JWT_SECRET` — only for legacy HS256 projects. Leave blank and tokens are
   verified against the project's JWKS instead.
@@ -191,10 +203,14 @@ Confirmed by hand against the team's Supabase project and the Gemini API:
 - Fingerprint extraction, including the `customer_stated` / `ai_inferred` provenance
   marker and the high-risk safety warning.
 
-**Not yet verified: pgvector similarity search**, which needs `DATABASE_URL`. Without it
-those endpoints return a clean `VECTOR_SEARCH_ERROR` rather than failing oddly, but the
-ranking has not been exercised against the real HNSW indexes. That is the one gap
-between this backend and a fully proven end-to-end path.
+- pgvector similarity search against the real indexes. The project runs pgvector
+  0.8.2, both embedding tables are `vector(1536)`, and both carry an HNSW index built
+  with `vector_cosine_ops` — the operator class matching the `<=>` the queries use.
+  A live search separates cleanly: a relevant query scores ~0.83 where an unrelated one
+  scores ~0.56, and `/experiences/similar` correctly floats a verified case above a
+  slightly closer unverified one.
+- The full matching pipeline end to end: problem to fingerprint to embedding to
+  pgvector retrieval to ranking to persisted `match_results` with explanations.
 
 ## Layout
 

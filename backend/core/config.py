@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     database_url: str = ""
     supabase_jwt_secret: str = ""
+    # Vector search only. Short, because an unreachable database is a configuration
+    # problem and should surface as one rather than as a stalled request.
+    db_connect_timeout_seconds: int = 8
+    db_pool_timeout_seconds: int = 10
 
     # Gemini
     gemini_api_key: str = ""

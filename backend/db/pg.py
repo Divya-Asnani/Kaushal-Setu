@@ -17,6 +17,14 @@ log = logging.getLogger(__name__)
 _pool = None
 
 
+IPV6_HINT = (
+    "Supabase's direct database host (db.<ref>.supabase.co) resolves to IPv6 only. "
+    "That works from a machine with IPv6, but not from inside a Docker container on a "
+    "default bridge network. Use the Session pooler connection string from "
+    "Supabase -> Settings -> Database, which is reachable over IPv4."
+)
+
+
 def _get_pool():
     global _pool
     if _pool is None:
@@ -28,7 +36,20 @@ def _get_pool():
         from psycopg_pool import ConnectionPool
 
         _pool = ConnectionPool(
-            settings.database_url, min_size=1, max_size=5, kwargs={"autocommit": True}
+            settings.database_url,
+            min_size=0,
+            max_size=5,
+            # Fail fast rather than hanging a request for half a minute. An
+            # unreachable database is a configuration problem, not a slow query.
+            timeout=settings.db_pool_timeout_seconds,
+            kwargs={
+                "autocommit": True,
+                "connect_timeout": settings.db_connect_timeout_seconds,
+            },
+            # Opening lazily keeps a misconfigured DATABASE_URL from blocking startup;
+            # the rest of the API does not need this connection.
+            open=True,
+            check=None,
         )
     return _pool
 
@@ -42,6 +63,15 @@ def cursor() -> Iterator[Any]:
             yield cur
 
 
+def _is_unreachable(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        k in text
+        for k in ("network is unreachable", "timeout", "could not connect",
+                  "connection refused", "name or service not known", "temporary failure")
+    )
+
+
 def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     try:
         with cursor() as cur:
@@ -50,6 +80,14 @@ def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     except APIError:
         raise
     except Exception as exc:  # pragma: no cover - depends on live database
+        if _is_unreachable(exc):
+            # By far the most common cause, and the least obvious from the raw error.
+            log.error("Database unreachable for vector search. %s", IPV6_HINT)
+            raise APIError(
+                VECTOR_SEARCH_ERROR,
+                "The database is unreachable, so semantic search is unavailable.",
+                {"hint": IPV6_HINT},
+            ) from exc
         log.exception("pgvector query failed")
         raise APIError(VECTOR_SEARCH_ERROR, "Semantic search failed.") from exc
 
