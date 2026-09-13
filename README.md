@@ -94,6 +94,26 @@ Run the tests inside the image:
 docker compose run --rm --entrypoint python api -m pytest -q
 ```
 
+### Deploying to Render
+
+Create a **Web Service** — not a Background Worker. A worker has no public URL or HTTP
+port; this is an API the Flutter client calls.
+
+- **Runtime:** Docker (Render uses the `Dockerfile` in the repo root).
+- **Health check path:** `/health`
+- **Environment variables:** everything from `.env.example`. `render.yaml` lists them,
+  with the secrets marked `sync: false` so they are entered in the dashboard rather
+  than committed.
+- **`DATABASE_URL` must be the Session pooler string.** Render, like Docker, cannot
+  reach Supabase's IPv6-only direct host.
+
+The container binds to `$PORT` when the platform sets one and falls back to 8000
+locally, so the same image runs in both places.
+
+> **The free plan sleeps after ~15 minutes of inactivity**, and the next request pays a
+> cold start of roughly a minute. That is survivable for sharing a link, but do not let
+> a live demo be the request that wakes it — hit the URL a few minutes beforehand.
+
 ### Without Docker
 
 ```bash
