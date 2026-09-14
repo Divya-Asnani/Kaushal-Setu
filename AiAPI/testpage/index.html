@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iBolt pipeline test page</title>
+
+<style>
+  :root { --line:#d8d8d8; --muted:#666; --bg:#fafafa; --accent:#1a56b8; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; background: var(--bg); color:#111; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:6px; padding:16px; margin-bottom:14px; }
+  .step h2 { font-size:14px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  input, textarea { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:4px; font:inherit; }
+  textarea { min-height:70px; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:4px; padding:8px 14px; font:inherit; cursor:pointer; margin-top:10px; }
+  button:disabled { background:#aaa; cursor:not-allowed; }
+  button.secondary { background:#555; }
+  pre { background:#f4f4f4; border:1px solid var(--line); border-radius:4px; padding:10px; overflow:auto; max-height:340px; font-size:12px; margin:10px 0 0; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > * { flex:1 1 220px; }
+  .ok { color:#1a7f37; } .err { color:#b42318; }
+  .warn { background:#fff4e5; border:1px solid #f0c48a; padding:9px 11px; border-radius:4px; margin-top:10px; }
+  .match { border:1px solid var(--line); border-radius:5px; padding:10px; margin-top:8px; background:#fff; }
+  .match h3 { margin:0 0 4px; font-size:13px; }
+  .scores { color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .match ul { margin:4px 0 0; padding-left:18px; }
+  .bar { height:5px; background:#e6e6e6; border-radius:3px; overflow:hidden; margin:4px 0 6px; }
+  .bar span { display:block; height:100%; background:var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>iBolt pipeline test page</h1>
+<p class="sub">Exercises problem &rarr; fingerprint &rarr; embedding &rarr; pgvector &rarr; ranking against a running backend. Not part of the product.</p>
+
+<div class="step">
+  <h2>1 &middot; Connect</h2>
+  <div class="row">
+    <div><label>API base</label><input id="api" value="http://127.0.0.1:8000/api/v1"></div>
+    <div><label>Supabase URL</label><input id="sburl" placeholder="https://xxx.supabase.co"></div>
+  </div>
+  <div class="row">
+    <div><label>Supabase anon key</label><input id="sbkey" placeholder="eyJ..."></div>
+  </div>
+  <div class="row">
+    <div><label>Email</label><input id="email" value="customer@demo.ibolt.local"></div>
+    <div><label>Password</label><input id="password" type="password" value="DemoPass123!"></div>
+  </div>
+  <button id="login">Sign in</button>
+  <button id="health" class="secondary">Check /health</button>
+  <pre id="authOut">Not signed in.</pre>
+</div>
+
+<div class="step">
+  <h2>2 &middot; Describe a problem</h2>
+  <label>Title</label>
+  <input id="title" value="Phone fell and will not turn on">
+  <label>Description</label>
+  <textarea id="description">My Samsung S23 fell from my hand yesterday and now it won't turn on. There is no display at all. I think there may be a motherboard issue.</textarea>
+  <div class="row">
+    <div><label>Latitude</label><input id="lat" value="18.5204"></div>
+    <div><label>Longitude</label><input id="lon" value="73.8567"></div>
+    <div><label>City</label><input id="city" value="Pune"></div>
+  </div>
+  <button id="create">Create problem</button>
+  <pre id="problemOut">No problem created yet.</pre>
+</div>
+
+<div class="step">
+  <h2>3 &middot; Extract the fingerprint</h2>
+  <button id="fingerprint" disabled>Generate fingerprint</button>
+  <div id="safety"></div>
+  <pre id="fpOut">Create a problem first.</pre>
+</div>
+
+<div class="step">
+  <h2>4 &middot; Rank workers</h2>
+  <button id="match" disabled>Get Top-K matches</button>
+  <div id="matchCards"></div>
+  <pre id="matchOut">Generate a fingerprint first.</pre>
+</div>
+
+<div class="step">
+  <h2>5 &middot; Semantic search</h2>
+  <label>Query</label>
+  <input id="query" value="Samsung S23 no power after falling">
+  <button id="searchExp" disabled>Similar experiences</button>
+  <button id="searchKb" class="secondary" disabled>Knowledge Hub</button>
+  <pre id="searchOut">Sign in first.</pre>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { token: null, problemId: null };
+
+function show(el, value, isError) {
+  el.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  el.className = isError ? "err" : "";
+}
+
+async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (state.token) headers.Authorization = "Bearer " + state.token;
+  const response = await fetch($("api").value.replace(/\/$/, "") + path, { ...options, headers });
+  const text = await response.text();
+  let body;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!response.ok) throw new Error(JSON.stringify(body, null, 2));
+  return body;
+}
+
+$("health").onclick = async () => {
+  try {
+    const base = $("api").value.replace(/\/api\/v1\/?$/, "");
+    const response = await fetch(base + "/health");
+    show($("authOut"), await response.json());
+  } catch (e) { show($("authOut"), e.message, true); }
+};
+
+$("login").onclick = async () => {
+  const url = $("sburl").value.replace(/\/$/, "");
+  const key = $("sbkey").value.trim();
+  if (!url || !key) return show($("authOut"), "Supabase URL and anon key are required.", true);
+  try {
+    const response = await fetch(url + "/auth/v1/token?grant_type=password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: key },
+      body: JSON.stringify({ email: $("email").value, password: $("password").value })
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(JSON.stringify(body, null, 2));
+    state.token = body.access_token;
+    const me = await api("/me");
+    show($("authOut"), { signed_in_as: me.display_name, role: me.role, id: me.id });
+    $("searchExp").disabled = $("searchKb").disabled = false;
+  } catch (e) { show($("authOut"), e.message, true); }
+};
+
+$("create").onclick = async () => {
+  try {
+    const problem = await api("/problems", {
+      method: "POST",
+      body: JSON.stringify({
+        title: $("title").value,
+        description: $("description").value,
+        city: $("city").value,
+        latitude: parseFloat($("lat").value),
+        longitude: parseFloat($("lon").value)
+      })
+    });
+    state.problemId = problem.id;
+    show($("problemOut"), problem);
+    $("fingerprint").disabled = false;
+  } catch (e) { show($("problemOut"), e.message, true); }
+};
+
+$("fingerprint").onclick = async () => {
+  show($("fpOut"), "Calling the model...");
+  $("safety").innerHTML = "";
+  try {
+    const fp = await api(`/problems/${state.problemId}/fingerprint`, {
+      method: "POST", body: JSON.stringify({ regenerate: true })
+    });
+    show($("fpOut"), fp);
+    if (fp.safety_warning) {
+      $("safety").innerHTML = `<div class="warn"><strong>Safety warning:</strong> ${fp.safety_warning}</div>`;
+    }
+    if (fp.suspected_component) {
+      const source = fp.suspected_component_source === "customer_stated"
+        ? "reported by the customer" : "inferred, unconfirmed";
+      $("safety").innerHTML += `<div class="warn">Suspected component <strong>${fp.suspected_component}</strong> is a hypothesis (${source}), not a diagnosis.</div>`;
+    }
+    $("match").disabled = false;
+  } catch (e) { show($("fpOut"), e.message, true); }
+};
+
+$("match").onclick = async () => {
+  show($("matchOut"), "Embedding, retrieving and ranking...");
+  $("matchCards").innerHTML = "";
+  try {
+    const result = await api(`/problems/${state.problemId}/matches?limit=5`);
+    $("matchCards").innerHTML = result.items.map(m => `
+      <div class="match">
+        <h3>#${m.rank_position} &middot; worker ${m.worker_id.slice(0, 8)} &middot; score ${m.match_score}</h3>
+        <div class="bar"><span style="width:${m.match_score}%"></span></div>
+        <div class="scores">
+          problem ${m.problem_similarity} &middot; context ${m.context_similarity} &middot;
+          verified ${m.verified_experience_confidence} &middot; proximity ${m.proximity_score}
+          ${m.distance_km != null ? "&middot; " + m.distance_km + " km" : ""}
+        </div>
+        <ul>${m.explanation.map(r => `<li>${r}</li>`).join("")}</ul>
+      </div>`).join("") || "<p>No workers matched. Has the seed script been run?</p>";
+    show($("matchOut"), {
+      candidate_pool_size: result.candidate_pool_size,
+      graph_enriched: result.graph_enriched,
+      radius_relaxed: result.radius_relaxed,
+      weights: result.weights
+    });
+  } catch (e) { show($("matchOut"), e.message, true); }
+};
+
+$("searchExp").onclick = async () => {
+  show($("searchOut"), "Searching...");
+  try {
+    show($("searchOut"), await api("/experiences/similar?limit=5&q=" + encodeURIComponent($("query").value)));
+  } catch (e) { show($("searchOut"), e.message, true); }
+};
+
+$("searchKb").onclick = async () => {
+  show($("searchOut"), "Searching...");
+  try {
+    show($("searchOut"), await api("/knowledge-cases/similar?limit=5&q=" + encodeURIComponent($("query").value)));
+  } catch (e) { show($("searchOut"), e.message, true); }
+};
+</script>
+</body>
+</html>

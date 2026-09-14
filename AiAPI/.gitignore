@@ -1,0 +1,48 @@
+# ---- secrets ----
+# .env holds the Supabase service-role key, the database password and the Gemini
+# key. It must never be committed. Copy .env.example instead.
+.env
+.env.*
+!.env.example
+# ---- python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# ---- editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- os ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- local scratch ----
+.scratch/
+*.log

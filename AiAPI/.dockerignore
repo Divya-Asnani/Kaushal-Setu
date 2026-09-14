@@ -1,0 +1,33 @@
+# Secrets must never enter the build context or an image layer.
+.env
+.env.*
+!.env.example
+
+
+.git/
+.gitignore
+
+.venv/
+venv/
+env/
+ENV/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Not needed at runtime.
+docs/
+testpage/
+README.md
+*.log
+.scratch/

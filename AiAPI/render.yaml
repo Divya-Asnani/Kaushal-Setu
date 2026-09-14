@@ -1,0 +1,78 @@
+# Render Blueprint. Optional: the service can equally be created by hand in the
+# dashboard as a Web Service with runtime "Docker". Secrets are deliberately marked
+# sync:false so they are entered in the Render dashboard and never committed.
+services:
+  - type: web
+    name: ibolt-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore          # closest listed region to the Supabase project (ap-southeast)
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- Supabase ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Must be the Session pooler string: the direct host is IPv6-only and Render,
+      # like Docker, cannot reach it.
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # --- Gemini ---
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_EMBEDDING_MODEL
+        value: gemini-embedding-2
+      - key: EMBEDDING_DIM
+        value: "1536"
+      - key: GEMINI_FINGERPRINT_MODEL
+        value: gemma-4-31b-it
+      - key: GEMINI_FINGERPRINT_FALLBACK_MODEL
+        value: gemini-3.5-flash-lite
+      - key: FINGERPRINT_MAX_ATTEMPTS
+        value: "1"
+      - key: FINGERPRINT_FALLBACK_ATTEMPTS
+        value: "2"
+      - key: FINGERPRINT_TIMEOUT_SECONDS
+        value: "20"
+
+      # --- Neo4j (optional; matching degrades cleanly without it) ---
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+
+      # --- Storage buckets ---
+      - key: STORAGE_PROBLEM_BUCKET
+        value: problem-media
+      - key: STORAGE_EXPERIENCE_BUCKET
+        value: experience-media
+      - key: STORAGE_KNOWLEDGE_BUCKET
+        value: knowledge-case-media
+      - key: STORAGE_CERTIFICATE_BUCKET
+        value: certificates
+      - key: KNOWLEDGE_VIDEO_MAX_BYTES
+        value: "52428800"
+
+      # --- Matching weights (prototype parameters, PRD section 14) ---
+      - key: MATCH_WEIGHT_PROBLEM
+        value: "0.40"
+      - key: MATCH_WEIGHT_CONTEXT
+        value: "0.30"
+      - key: MATCH_WEIGHT_VERIFIED
+        value: "0.20"
+      - key: MATCH_WEIGHT_PROXIMITY
+        value: "0.10"
+      - key: MATCH_CANDIDATE_POOL
+        value: "50"
+      - key: SERVICE_REQUEST_TTL_HOURS
+        value: "48"
