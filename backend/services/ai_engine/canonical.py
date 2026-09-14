@@ -67,6 +67,14 @@ def fingerprint_text(fp: Fingerprint) -> str:
         )
         suspected = f"{fp.suspected_component} ({qualifier})"
 
+    # Candidate parts are among the most discriminating text available: "starting
+    # capacitor" pulls toward fan repairs, "power IC" toward board-level phone work.
+    candidates = [
+        str(c.get("component", "")).strip()
+        for c in (getattr(fp, "likely_causes", None) or [])
+        if str(c.get("component", "")).strip()
+    ]
+
     return _render(
         [
             ("Category", fp.category),
@@ -77,6 +85,7 @@ def fingerprint_text(fp: Fingerprint) -> str:
             ("Symptoms", fp.symptoms),
             ("Context", fp.context),
             ("Suspected component", suspected),
+            ("Candidate parts", candidates),
             ("Repair type", fp.repair_type),
             ("Skills", normalise_skills(fp.extracted_skills)),
             ("Summary", fp.ai_summary),

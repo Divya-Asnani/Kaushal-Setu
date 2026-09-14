@@ -62,6 +62,10 @@ def extract_problem_fingerprint(title: str, description: str) -> dict[str, Any]:
         "urgency": "High" if result.urgency == "urgent" else "Standard",
         "requires_onsite": True,
         "items": result.context,
+        # The table has no column for these, so the differential and the suggested
+        # checks ride in the context jsonb alongside the provenance markers.
+        "likely_causes": result.likely_causes,
+        "diagnostic_steps": result.diagnostic_steps,
         # Provenance is mandatory: the UI must be able to tell a customer's own words
         # from the model's guess, and never present either as a confirmed diagnosis.
         "suspected_component_source": result.suspected_component_source,
@@ -112,6 +116,7 @@ def _fingerprint_from_record(record: dict[str, Any]) -> fp_engine.Fingerprint:
         issue=record.get("issue"),
         symptoms=list(record.get("symptoms") or []),
         context=list(context.get("items") or []),
+        likely_causes=list(context.get("likely_causes") or []),
         suspected_component=record.get("suspected_component"),
         suspected_component_source=context.get("suspected_component_source"),
         repair_type=record.get("repair_type"),

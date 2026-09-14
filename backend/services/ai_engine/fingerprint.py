@@ -50,6 +50,8 @@ _FIELDS: dict[str, type] = {
     "issue": str,
     "symptoms": list,
     "context": list,
+    "likely_causes": list,
+    "diagnostic_steps": list,
     "suspected_component": str,
     "suspected_component_source": str,
     "repair_type": str,
@@ -58,10 +60,12 @@ _FIELDS: dict[str, type] = {
     "ai_summary": str,
 }
 
-_PROMPT = """You analyse repair problems reported by customers of an electrical and
-electronics repair marketplace. Extract a structured Problem Fingerprint.
+_PROMPT = """You are an experienced electrical and electronics repair technician doing
+triage. A customer has described a fault in plain language. Work out what is most
+likely wrong, the way a technician would before opening the device, and return it as
+structured data.
 
-Return ONLY a JSON object, no prose and no markdown fences, with exactly these keys:
+Return ONLY a JSON object. No prose, no markdown fences, nothing before or after it.
 
 {
   "device_type": string or null,
@@ -71,6 +75,11 @@ Return ONLY a JSON object, no prose and no markdown fences, with exactly these k
   "issue": string or null,
   "symptoms": [string],
   "context": [string],
+  "likely_causes": [
+    {"component": string, "reasoning": string, "confidence": "high"|"medium"|"low",
+     "check": string}
+  ],
+  "diagnostic_steps": [string],
   "suspected_component": string or null,
   "suspected_component_source": "customer_stated" or "ai_inferred" or null,
   "repair_type": string or null,
@@ -79,24 +88,90 @@ Return ONLY a JSON object, no prose and no markdown fences, with exactly these k
   "ai_summary": string
 }
 
-Field meanings:
-- device_type: the thing being repaired, such as smartphone, ceiling fan, inverter.
-- category: the broad domain, such as electronics repair or home electrical.
-- issue: the primary fault in a few words, such as no power.
-- symptoms: what is observed, such as no display or no boot.
-- context: circumstances around the failure, such as physical drop or after rain.
-- repair_type: the kind of work needed, such as board-level diagnosis or rewiring.
-- extracted_skills: short canonical skill phrases a worker would need, such as
-  Samsung smartphone repair, board-level repair, MCB troubleshooting.
-- ai_summary: one neutral sentence describing the problem.
+HOW TO REASON
 
-Rules you must follow:
-- Only record what the text or image supports. Use null rather than guessing.
-- Set suspected_component ONLY if the customer named or clearly implied a component,
-  or an attached image plainly shows the damaged part. Then set
-  suspected_component_source to customer_stated when the customer said it, or
-  ai_inferred when you concluded it from an image.
-- Never assert that a component is faulty. It is a hypothesis for a technician to check.
+Separate three different things before you answer:
+  1. The SYMPTOM  - what the customer observes.
+  2. The CONTEXT  - what was happening around the failure (age, weather, impact, load).
+  3. The CAUSE    - the part that is actually likely at fault.
+
+The customer describes symptoms. Your value is naming plausible causes.
+
+Do not blame a protective device for doing its job. An MCB, RCCB, fuse or thermal
+cut-out that trips is usually reporting a fault elsewhere - in the appliance, the
+wiring or the earth path. Only suspect the protective device itself when the evidence
+points at it, such as tripping with every load disconnected.
+
+Do not blame the part the customer happened to name. Read what they observed, then
+reason about what causes that observation.
+
+Use the details the customer volunteers. Age ("3 years old"), weather ("after the
+rains"), impact ("dropped"), and which loads are affected are diagnostic evidence,
+not background.
+
+LIKELY CAUSES
+
+Give two to four entries, ordered most likely first. Each needs:
+  - component: the specific part, in technician vocabulary (starting capacitor, power
+    IC, backlight LED strip, heating element, changeover relay, charging flex).
+  - reasoning: why these symptoms point there, in one sentence.
+  - confidence: high only when the symptom pattern is close to definitive.
+  - check: the measurement or test that would confirm or rule it out.
+
+If the description is too vague to support any cause, return an empty list rather than
+inventing one.
+
+DIAGNOSTIC STEPS
+
+Two to four checks, in the order a technician would do them: cheapest, safest and most
+informative first. Make them specific ("measure voltage across the capacitor
+terminals"), not generic ("inspect the device").
+
+OTHER FIELDS
+
+- issue: characterise the fault, do not restate the title. "Runs at reduced speed with
+  audible hum" is useful; "fan problem" is not.
+- symptoms: only what the customer observed. No conclusions.
+- context: circumstances, not symptoms. Do not repeat a symptom here.
+- suspected_component: whichever part the customer named, if they named one - even if
+  you rank a different cause higher. Their hypothesis is recorded as theirs, and your
+  own ranking is what likely_causes is for. If the customer named nothing, use
+  likely_causes[0]. Null if nothing is supportable.
+- suspected_component_source: "customer_stated" whenever the customer named that part,
+  regardless of whether you agree with them; "ai_inferred" when you chose it yourself.
+
+  When you disagree with a customer's guess, keep their part in suspected_component,
+  put your own candidate first in likely_causes, and include their part in
+  likely_causes too with the confidence you actually think it deserves. Never silently
+  replace their hypothesis - the customer needs to see that you considered it.
+- repair_type: the work involved, such as board-level diagnosis, capacitor replacement,
+  rewiring, backlight replacement.
+- urgency: "urgent" for burning smell, sparking, shock, smoke, exposed live conductors,
+  or anything with a fire or injury risk. Otherwise "normal".
+- extracted_skills: two to four skills a technician needs, specific enough to match on:
+  "ceiling fan capacitor replacement", "board-level micro-soldering", "earth leakage
+  fault finding".
+- ai_summary: one neutral sentence a customer would understand.
+
+SAFETY
+
+Never state that a part IS faulty. Everything here is a hypothesis for a technician to
+verify. Phrase reasoning as likelihood, not fact.
+
+EXAMPLES
+
+Input: "The MCB trips every time I switch on the geyser. Other appliances work fine."
+Correct reasoning: the MCB is protecting the circuit; the fault is in the geyser or its
+circuit. The strongest candidate is a heating element leaking to earth. Wrong answer:
+blaming the MCB because the customer named it.
+
+Input: "Ceiling fan runs slow and hums, worse after the rains."
+Correct reasoning: hum with reduced speed is the classic failing-capacitor pattern;
+damp ingress raises winding insulation problems as a secondary candidate.
+
+Input: "TV has sound but no picture, faint image under a torch."
+Correct reasoning: the panel is receiving signal, so the fault is in the backlight
+circuit - LED strips or the driver - not the main board.
 
 Customer problem title: __TITLE__
 Customer problem description: __DESCRIPTION__
@@ -134,6 +209,9 @@ class Fingerprint:
     issue: str | None = None
     symptoms: list[str] = field(default_factory=list)
     context: list[str] = field(default_factory=list)
+    # Ranked differential: each entry is {component, reasoning, confidence, check}.
+    likely_causes: list[dict[str, Any]] = field(default_factory=list)
+    diagnostic_steps: list[str] = field(default_factory=list)
     suspected_component: str | None = None
     suspected_component_source: str | None = None
     repair_type: str | None = None
@@ -160,6 +238,8 @@ class Fingerprint:
             "symptoms": self.symptoms,
             "context": {
                 "items": self.context,
+                "likely_causes": self.likely_causes,
+                "diagnostic_steps": self.diagnostic_steps,
                 "urgency": self.urgency,
                 "suspected_component_source": self.suspected_component_source,
                 "safety_warning": self.safety_warning,
@@ -186,6 +266,8 @@ def from_row(row: dict[str, Any]) -> Fingerprint:
         issue=row.get("issue"),
         symptoms=list(row.get("symptoms") or []),
         context=list(context.get("items") or []),
+        likely_causes=list(context.get("likely_causes") or []),
+        diagnostic_steps=list(context.get("diagnostic_steps") or []),
         suspected_component=row.get("suspected_component"),
         suspected_component_source=context.get("suspected_component_source"),
         repair_type=row.get("repair_type"),
@@ -236,12 +318,49 @@ def _extract_json(text: str) -> dict[str, Any]:
     raise ValueError("no JSON object in model response")
 
 
+_CONFIDENCE = {"high", "medium", "low"}
+
+
+def _coerce_causes(value: Any) -> list[dict[str, Any]]:
+    """Normalise the differential into a predictable list of dicts.
+
+    The model sometimes returns plain strings instead of objects, so a bare string is
+    accepted as a component name with the rest left empty. Confidence is clamped to the
+    three allowed values and defaults to the weakest, so an unrecognised value can never
+    make a guess look more certain than it is.
+    """
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+
+    causes: list[dict[str, Any]] = []
+    for item in value[:4]:
+        if isinstance(item, str):
+            item = {"component": item}
+        if not isinstance(item, dict):
+            continue
+        component = str(item.get("component") or "").strip()
+        if not component:
+            continue
+        confidence = str(item.get("confidence") or "").strip().lower()
+        causes.append({
+            "component": component,
+            "reasoning": str(item.get("reasoning") or "").strip(),
+            "confidence": confidence if confidence in _CONFIDENCE else "low",
+            "check": str(item.get("check") or "").strip(),
+        })
+    return causes
+
+
 def _coerce(payload: dict[str, Any]) -> dict[str, Any]:
     """Force the model output into the declared shapes."""
     clean: dict[str, Any] = {}
     for key, kind in _FIELDS.items():
         value = payload.get(key)
-        if kind is list:
+        if key == "likely_causes":
+            clean[key] = _coerce_causes(value)
+        elif kind is list:
             if isinstance(value, str):
                 value = [value]
             elif not isinstance(value, list):

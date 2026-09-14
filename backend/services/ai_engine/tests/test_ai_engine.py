@@ -270,3 +270,83 @@ def test_one_card_per_person_even_with_duplicate_worker_rows():
     ])
     assert [c["worker_id"] for c in kept] == ["row-a", "row-c"]
     assert kept[0]["match_score"] == 0.90, "the better-scoring row should survive"
+
+
+# ------------------------------------------------------ differential diagnosis
+
+
+def test_a_well_formed_differential_is_kept():
+    from backend.services.ai_engine.fingerprint import _coerce_causes
+
+    causes = _coerce_causes([
+        {"component": "starting capacitor", "reasoning": "hum with low speed",
+         "confidence": "high", "check": "measure capacitance"},
+    ])
+    assert causes[0]["component"] == "starting capacitor"
+    assert causes[0]["confidence"] == "high"
+    assert causes[0]["check"] == "measure capacitance"
+
+
+def test_a_bare_string_cause_is_accepted():
+    """The model sometimes returns names instead of objects."""
+    from backend.services.ai_engine.fingerprint import _coerce_causes
+
+    causes = _coerce_causes(["starting capacitor", "stator winding"])
+    assert [c["component"] for c in causes] == ["starting capacitor", "stator winding"]
+    assert all(c["confidence"] == "low" for c in causes)
+
+
+def test_an_unrecognised_confidence_falls_to_the_weakest():
+    """An invented confidence must never make a guess look more certain than it is."""
+    from backend.services.ai_engine.fingerprint import _coerce_causes
+
+    assert _coerce_causes([{"component": "x", "confidence": "certain"}])[0]["confidence"] == "low"
+
+
+def test_causes_without_a_component_are_dropped():
+    from backend.services.ai_engine.fingerprint import _coerce_causes
+
+    assert _coerce_causes([{"reasoning": "no component named"}, {"component": "  "}]) == []
+
+
+def test_the_differential_is_capped():
+    from backend.services.ai_engine.fingerprint import _coerce_causes
+
+    assert len(_coerce_causes([{"component": f"part {i}"} for i in range(10)])) == 4
+
+
+def test_a_non_list_differential_degrades_to_empty():
+    from backend.services.ai_engine.fingerprint import _coerce_causes
+
+    assert _coerce_causes(None) == []
+    assert _coerce_causes("nonsense") == []
+    assert _coerce_causes({"component": "single"})[0]["component"] == "single"
+
+
+def test_the_differential_survives_a_round_trip_through_storage():
+    """likely_causes has no column of its own; it rides in the context jsonb."""
+    from backend.services.ai_engine.fingerprint import Fingerprint, from_row
+
+    original = Fingerprint(
+        suspected_component="MCB", suspected_component_source=STATED,
+        likely_causes=[{"component": "heating element", "reasoning": "earth leakage",
+                        "confidence": "high", "check": "megger test"}],
+        diagnostic_steps=["isolate the circuit"],
+    )
+    restored = from_row(original.to_row("problem-1"))
+    assert restored.likely_causes[0]["component"] == "heating element"
+    assert restored.diagnostic_steps == ["isolate the circuit"]
+    assert restored.suspected_component_source == STATED
+
+
+def test_candidate_parts_reach_the_embedded_text():
+    """Candidate parts are strong matching signal, so they must be embedded."""
+    from backend.services.ai_engine import canonical
+    from backend.services.ai_engine.fingerprint import Fingerprint
+
+    text = canonical.fingerprint_text(Fingerprint(
+        device_type="ceiling fan",
+        likely_causes=[{"component": "starting capacitor"}, {"component": "stator winding"}],
+    ))
+    assert "starting capacitor" in text
+    assert "stator winding" in text

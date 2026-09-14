@@ -64,11 +64,39 @@ application's own configuration.
 > deliberate — if Gemma stabilises it takes over again and stops spending the backup's
 > smaller daily budget.
 
+## What the fingerprint contains
+
+Beyond the columns the table has, the extractor produces a differential diagnosis that
+rides in the `context` jsonb:
+
+- `likely_causes` — two to four candidate parts, most likely first, each with the
+  reasoning, a confidence of high/medium/low, and the check that would confirm it.
+- `diagnostic_steps` — what a technician would check first, cheapest and safest first.
+
+The prompt is written around diagnostic reasoning rather than extraction, which changes
+the answers materially. Two rules matter most:
+
+- **A protective device that trips is reporting a fault elsewhere.** "The MCB trips when
+  I switch on the geyser" is a geyser fault, not an MCB fault. Before this, the extractor
+  blamed the MCB because the customer named it, and matching then hunted for MCB repair
+  experience instead of earth-leakage experience.
+- **Details the customer volunteers are evidence.** Battery age, "after the rains", a
+  drop, and which loads are affected all change the differential.
+
+Candidate parts are also folded into the text that gets embedded, so a better diagnosis
+directly improves retrieval: "starting capacitor" pulls toward fan repairs where
+"ceiling fan not working" alone does not.
+
 ## Safety rules carried into the output
 
 - `suspected_component` always travels with `context.suspected_component_source`,
   either `customer_stated` or `ai_inferred`. **The UI must not present either as a
   confirmed diagnosis.**
+- When the customer names a part, it stays in `suspected_component` as theirs even if
+  the model ranks something else higher. The model's own candidate leads
+  `likely_causes`, and the customer's guess appears there too at whatever confidence it
+  deserves, so a customer can see their hypothesis was considered rather than silently
+  discarded.
 - High-risk electrical wording sets `context.safety_warning`, which should be shown
   rather than buried.
 
@@ -78,6 +106,6 @@ application's own configuration.
 python -m pytest backend/services/ai_engine/tests -q
 ```
 
-23 tests, no credentials or network needed. They cover parsing untidy model output, the
+43 tests, no credentials or network needed. They cover parsing untidy model output, the
 provenance and safety rules, canonical text, both fallback paths, and that the adapter
 returns exactly the same keys as the built-in extractor.
