@@ -1095,6 +1095,320 @@ def sync_knowledge_cases() -> int:
 
 
 # ============================================================================
+# PROBLEM FINGERPRINTS
+# ============================================================================
+
+def sync_problem_fingerprints() -> Dict[str, int]:
+    """
+    Project Problem Fingerprints into the Neo4j Graph.
+
+    For every fingerprint:
+        (p:Problem {id: "problem_" + problem_id})
+             ├── INVOLVES ──> (d:Device)
+             ├── HAS_ISSUE ──> (i:Issue)
+             ├── HAS_CONTEXT ──> (c:Context)
+             └── REQUIRES_SKILL ──> (s:Skill)
+    """
+
+    fingerprints = _records("problem_fingerprints")
+
+    if not fingerprints:
+        logger.info("No problem fingerprint records found.")
+        return {
+            "problem_fingerprints": 0,
+            "fingerprint_devices": 0,
+            "fingerprint_issues": 0,
+            "fingerprint_contexts": 0,
+            "fingerprint_skills": 0,
+        }
+
+    problem_payload = []
+    device_payload = []
+    issue_payload = []
+    context_payload = []
+    skill_payload = []
+
+    # Map existing skills by normalized name for quick lookup
+    existing_skills_by_name = {}
+    for s_rec in _records("skills"):
+        s_name = s_rec.get("name") or s_rec.get("skill_name")
+        if s_name:
+            existing_skills_by_name[_normalize(s_name)] = str(s_rec["id"])
+
+    for fp in fingerprints:
+        raw_pid = fp.get("problem_id") or fp.get("id")
+
+        if not raw_pid:
+            continue
+
+        str_pid = str(raw_pid)
+        canonical_problem_id = (
+            str_pid if str_pid.startswith("problem_") else f"problem_{str_pid}"
+        )
+
+        device_type = fp.get("device_type")
+        brand = fp.get("brand")
+        model = fp.get("model")
+        category = fp.get("category")
+        issue = fp.get("issue")
+        suspected_component = fp.get("suspected_component")
+        repair_type = fp.get("repair_type")
+        ai_summary = fp.get("ai_summary")
+        embedding_status = fp.get("embedding_status", "pending")
+        fingerprint_version = fp.get("fingerprint_version", "v1")
+
+        # Parse symptoms robustly into a list of strings
+        symptoms_raw = fp.get("symptoms")
+        symptoms_list = []
+        if isinstance(symptoms_raw, list):
+            symptoms_list = [str(s).strip() for s in symptoms_raw if s and str(s).strip()]
+        elif isinstance(symptoms_raw, str):
+            import json
+            try:
+                parsed = json.loads(symptoms_raw)
+                if isinstance(parsed, list):
+                    symptoms_list = [str(s).strip() for s in parsed if s and str(s).strip()]
+                elif isinstance(parsed, str) and parsed.strip():
+                    symptoms_list = [parsed.strip()]
+            except Exception:
+                if symptoms_raw.strip():
+                    symptoms_list = [symptoms_raw.strip()]
+
+        problem_payload.append({
+            "canonical_problem_id": canonical_problem_id,
+            "problem_id": str_pid,
+            "device_type": device_type,
+            "brand": brand,
+            "model": model,
+            "category": category,
+            "issue": issue,
+            "symptoms": symptoms_list,
+            "suspected_component": suspected_component,
+            "repair_type": repair_type,
+            "ai_summary": ai_summary,
+            "embedding_status": embedding_status,
+            "fingerprint_version": fingerprint_version,
+        })
+
+        # Device node
+        device_key = _slug(f"{brand or ''}_{model or ''}_{device_type or category or ''}")
+        if device_key:
+            device_id = f"device_{device_key}"
+            device_payload.append({
+                "canonical_problem_id": canonical_problem_id,
+                "device_id": device_id,
+                "device_type": device_type,
+                "brand": brand,
+                "model": model,
+                "category": category,
+            })
+
+        # Issue node
+        if issue:
+            issue_id = f"issue_{_slug(issue)}"
+            issue_payload.append({
+                "canonical_problem_id": canonical_problem_id,
+                "issue_id": issue_id,
+                "issue": issue,
+            })
+
+        # Parse context robustly
+        context_raw = fp.get("context")
+        context_items = []
+        urgency = None
+        safety_warning = None
+
+        if isinstance(context_raw, dict):
+            raw_items = context_raw.get("items") or []
+            if isinstance(raw_items, list):
+                context_items = [str(x).strip() for x in raw_items if x and str(x).strip()]
+            elif isinstance(raw_items, str) and raw_items.strip():
+                context_items = [raw_items.strip()]
+            urgency = context_raw.get("urgency")
+            safety_warning = context_raw.get("safety_warning")
+        elif isinstance(context_raw, list):
+            context_items = [str(x).strip() for x in context_raw if x and str(x).strip()]
+        elif isinstance(context_raw, str):
+            import json
+            try:
+                parsed = json.loads(context_raw)
+                if isinstance(parsed, dict):
+                    raw_items = parsed.get("items") or []
+                    if isinstance(raw_items, list):
+                        context_items = [str(x).strip() for x in raw_items if x and str(x).strip()]
+                    elif isinstance(raw_items, str) and raw_items.strip():
+                        context_items = [raw_items.strip()]
+                    urgency = parsed.get("urgency")
+                    safety_warning = parsed.get("safety_warning")
+                elif isinstance(parsed, list):
+                    context_items = [str(x).strip() for x in parsed if x and str(x).strip()]
+                elif isinstance(parsed, str) and parsed.strip():
+                    context_items = [parsed.strip()]
+            except Exception:
+                if context_raw.strip():
+                    context_items = [context_raw.strip()]
+
+        for c_text in context_items:
+            c_id = f"context_{_slug(c_text)}"
+            context_payload.append({
+                "canonical_problem_id": canonical_problem_id,
+                "context_id": c_id,
+                "context_name": c_text,
+                "urgency": urgency,
+                "safety_warning": safety_warning,
+            })
+
+        # Parse extracted_skills robustly
+        skills_raw = fp.get("extracted_skills")
+        skills_list = []
+        if isinstance(skills_raw, list):
+            skills_list = [str(x).strip() for x in skills_raw if x and str(x).strip()]
+        elif isinstance(skills_raw, str):
+            import json
+            try:
+                parsed = json.loads(skills_raw)
+                if isinstance(parsed, list):
+                    skills_list = [str(x).strip() for x in parsed if x and str(x).strip()]
+                elif isinstance(parsed, str) and parsed.strip():
+                    skills_list = [parsed.strip()]
+            except Exception:
+                if skills_raw.strip():
+                    skills_list = [skills_raw.strip()]
+
+        for skill_name in skills_list:
+            norm_name = _normalize(skill_name)
+            s_id = existing_skills_by_name.get(norm_name) or f"skill_{_slug(skill_name)}"
+            skill_payload.append({
+                "canonical_problem_id": canonical_problem_id,
+                "skill_id": s_id,
+                "skill_name": skill_name,
+            })
+
+    # Cypher execution for Problems
+    problem_query = """
+    UNWIND $items AS fp
+
+    MERGE (p:Problem {id: fp.canonical_problem_id})
+
+    SET p.problem_id = fp.problem_id,
+        p.device_type = CASE WHEN fp.device_type IS NOT NULL AND fp.device_type <> '' THEN fp.device_type ELSE p.device_type END,
+        p.brand = CASE WHEN fp.brand IS NOT NULL AND fp.brand <> '' THEN fp.brand ELSE p.brand END,
+        p.model = CASE WHEN fp.model IS NOT NULL AND fp.model <> '' THEN fp.model ELSE p.model END,
+        p.category = CASE WHEN fp.category IS NOT NULL AND fp.category <> '' THEN fp.category ELSE p.category END,
+        p.issue = CASE WHEN fp.issue IS NOT NULL AND fp.issue <> '' THEN fp.issue ELSE p.issue END,
+        p.symptoms = CASE WHEN fp.symptoms IS NOT NULL AND size(fp.symptoms) > 0 THEN fp.symptoms ELSE p.symptoms END,
+        p.suspected_component = CASE WHEN fp.suspected_component IS NOT NULL AND fp.suspected_component <> '' THEN fp.suspected_component ELSE p.suspected_component END,
+        p.repair_type = CASE WHEN fp.repair_type IS NOT NULL AND fp.repair_type <> '' THEN fp.repair_type ELSE p.repair_type END,
+        p.ai_summary = CASE WHEN fp.ai_summary IS NOT NULL AND fp.ai_summary <> '' THEN fp.ai_summary ELSE p.ai_summary END,
+        p.embedding_status = CASE WHEN fp.embedding_status IS NOT NULL AND fp.embedding_status <> '' THEN fp.embedding_status ELSE p.embedding_status END,
+        p.fingerprint_version = CASE WHEN fp.fingerprint_version IS NOT NULL AND fp.fingerprint_version <> '' THEN fp.fingerprint_version ELSE p.fingerprint_version END
+    """
+
+    neo4j_client.execute(problem_query, {"items": problem_payload})
+
+    # Cypher execution for Devices
+    if device_payload:
+        device_query = """
+        UNWIND $items AS d
+
+        MERGE (device:Device {id: d.device_id})
+
+        SET device.category = CASE WHEN d.device_type IS NOT NULL AND d.device_type <> '' THEN d.device_type ELSE device.category END,
+            device.brand = CASE WHEN d.brand IS NOT NULL AND d.brand <> '' THEN d.brand ELSE device.brand END,
+            device.model = CASE WHEN d.model IS NOT NULL AND d.model <> '' THEN d.model ELSE device.model END
+
+        WITH d, device
+
+        MATCH (problem:Problem {id: d.canonical_problem_id})
+
+        MERGE (problem)-[:INVOLVES]->(device)
+        """
+
+        neo4j_client.execute(device_query, {"items": device_payload})
+
+    # Cypher execution for Issues
+    if issue_payload:
+        issue_query = """
+        UNWIND $items AS i
+
+        MERGE (issue:Issue {id: i.issue_id})
+
+        SET issue.name = CASE WHEN i.issue IS NOT NULL AND i.issue <> '' THEN i.issue ELSE issue.name END,
+            issue.canonical_name = CASE WHEN i.issue IS NOT NULL AND i.issue <> '' THEN i.issue ELSE issue.canonical_name END
+
+        WITH i, issue
+
+        MATCH (problem:Problem {id: i.canonical_problem_id})
+
+        MERGE (problem)-[:HAS_ISSUE]->(issue)
+        """
+
+        neo4j_client.execute(issue_query, {"items": issue_payload})
+
+    # Cypher execution for Contexts
+    if context_payload:
+        context_query = """
+        UNWIND $items AS c
+
+        MERGE (context:Context {id: c.context_id})
+
+        SET context.name = c.context_name,
+            context.canonical_name = c.context_name
+
+        FOREACH (ignored IN CASE WHEN c.urgency IS NOT NULL AND c.urgency <> '' THEN [1] ELSE [] END |
+            SET context.urgency = c.urgency
+        )
+
+        FOREACH (ignored IN CASE WHEN c.safety_warning IS NOT NULL AND c.safety_warning <> '' THEN [1] ELSE [] END |
+            SET context.safety_warning = c.safety_warning
+        )
+
+        WITH c, context
+
+        MATCH (problem:Problem {id: c.canonical_problem_id})
+
+        MERGE (problem)-[:HAS_CONTEXT]->(context)
+        """
+
+        neo4j_client.execute(context_query, {"items": context_payload})
+
+    # Cypher execution for Skills
+    if skill_payload:
+        skill_query = """
+        UNWIND $items AS sk
+
+        MERGE (skill:Skill {id: sk.skill_id})
+
+        SET skill.name = CASE WHEN skill.name IS NULL OR skill.name = '' THEN sk.skill_name ELSE skill.name END
+
+        WITH sk, skill
+
+        MATCH (problem:Problem {id: sk.canonical_problem_id})
+
+        MERGE (problem)-[:REQUIRES_SKILL]->(skill)
+        """
+
+        neo4j_client.execute(skill_query, {"items": skill_payload})
+
+    logger.info(
+        "Synced Problem Fingerprints: %s fingerprints, %s devices, %s issues, %s contexts, %s skills.",
+        len(problem_payload),
+        len(device_payload),
+        len(issue_payload),
+        len(context_payload),
+        len(skill_payload),
+    )
+
+    return {
+        "problem_fingerprints": len(problem_payload),
+        "fingerprint_devices": len(device_payload),
+        "fingerprint_issues": len(issue_payload),
+        "fingerprint_contexts": len(context_payload),
+        "fingerprint_skills": len(skill_payload),
+    }
+
+
+# ============================================================================
 # FULL SYNC
 # ============================================================================
 
@@ -1130,6 +1444,10 @@ def sync_all() -> Dict[str, int]:
     counts["knowledge_cases"] = (
         sync_knowledge_cases()
     )
+
+    fp_counts = sync_problem_fingerprints()
+
+    counts.update(fp_counts)
 
     logger.info(
         "Neo4j synchronization completed: %s",

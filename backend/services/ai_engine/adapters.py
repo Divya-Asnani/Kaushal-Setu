@@ -216,6 +216,28 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
     fingerprint = _fingerprint_from_record(record)
     semantic = _semantic_scores(fingerprint)
 
+    # 0. Safely retrieve Neo4j graph candidates for the problem
+    graph_hits: dict[str, dict[str, Any]] = {}
+    try:
+        from backend.services.neo4j.retrieval import GraphCandidateRetriever
+        retriever = GraphCandidateRetriever()
+        graph_candidates = retriever.retrieve_candidates(
+            problem_id=str(problem_id),
+            device_type=fingerprint.device_type,
+            brand=fingerprint.brand,
+            model=fingerprint.model,
+            issue=fingerprint.issue,
+            context=fingerprint.context,
+            suspected_component=fingerprint.suspected_component,
+            repair_type=fingerprint.repair_type,
+            extracted_skills=fingerprint.extracted_skills,
+        )
+        for cand in graph_candidates:
+            w_id = str(cand.get("worker_id"))
+            graph_hits[w_id] = cand
+    except Exception as exc:
+        log.warning("Neo4j candidate retrieval unavailable (%s); skipping graph signal", exc)
+
     problem_lat = problem.get("latitude", 19.0760)
     problem_lon = problem.get("longitude", 72.8777)
     declared_skills = {s.lower() for s in (fingerprint.extracted_skills or [])}
@@ -246,6 +268,8 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
         # 1. Problem similarity — semantic where we have embeddings for this worker,
         #    skill overlap otherwise, so workers not yet indexed still appear.
         hit = semantic.get(user_id) or semantic.get(str(worker_id))
+        g_hit = graph_hits.get(str(worker_id)) or graph_hits.get(user_id)
+
         if hit:
             problem_similarity = round(min(0.99, hit["similarity"]), 4)
             semantic_matches = hit["matches"]
@@ -256,9 +280,16 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
             )
             semantic_matches = 0
 
+        # Enrich problem_similarity with graph signal if candidate matched in graph
+        if g_hit and g_hit.get("graph_score", 0.0) > 0:
+            g_norm = min(0.99, round(g_hit["graph_score"] / 100.0, 4))
+            problem_similarity = round(max(problem_similarity, g_norm), 4)
+
         context_similarity = _structured_context_score(
             fingerprint, experiences, [s for s in worker_skills if s]
         )
+        if g_hit and g_hit.get("graph_score", 0.0) > 0:
+            context_similarity = round(min(0.99, max(context_similarity, 0.70 + (g_hit["graph_score"] * 0.0025))), 4)
 
         # 3. Verified experience confidence. Self-reported work counts for little;
         #    only customer-verified outcomes move this materially.
@@ -268,6 +299,9 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
             verified_confidence = 0.88
         else:
             verified_confidence = 0.65
+
+        if g_hit and g_hit.get("verification_status") == "verified":
+            verified_confidence = round(max(verified_confidence, 0.88), 4)
 
         # 4. Proximity — same curve as the built-in matcher so the numbers the client
         #    already displays keep their meaning.
@@ -294,6 +328,10 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
             fingerprint, hit, semantic_matches, len(experiences), verified_count,
             distance_km, radius, declared_skills, worker_skills,
         )
+        if g_hit:
+            for g_reason in g_hit.get("explanations", []):
+                if g_reason not in explanations:
+                    explanations.insert(0, g_reason)
 
         results.append({
             "match_result_id": str(uuid.uuid4()),
@@ -314,10 +352,8 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
             "rating": float(worker.get("rating", 5.0)),
             "total_reviews": int(worker.get("total_reviews", 0)),
             "is_available": worker.get("is_available", True),
-            # Prefer the semantic count: it is drawn from the indexed experiences in
-            # PostgreSQL, whereas `db.experiences` is an in-memory cache that may hold
-            # only a subset. Using the cache here would contradict the explanations.
-            "relevant_solved_cases": max(semantic_matches, len(experiences)),
+            # Prefer the semantic/graph count: drawn from indexed/graph experiences
+            "relevant_solved_cases": max(semantic_matches, len(experiences), 1 if g_hit else 0),
             "skills": [s for s in worker_skills if s],
         })
 

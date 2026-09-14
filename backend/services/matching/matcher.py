@@ -16,7 +16,7 @@ def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: fl
 
 def compute_matches_for_problem(problem_id: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
-    Computes Top-K matched technicians using the 4-component weighted model:
+    Computes Top-K matched technicians using the 4-component weighted model enriched with Neo4j graph evidence:
     Match Score = 0.40 * Prob_Sim + 0.30 * Ctx_Sim + 0.20 * Verified_Exp + 0.10 * Proximity
     """
     problem = db.problems.get(str(problem_id))
@@ -29,6 +29,29 @@ def compute_matches_for_problem(problem_id: str, limit: int = 5) -> List[Dict[st
     prob_device = (fingerprint.get("device_type") or "").lower()
     p_lat = problem.get("latitude", 19.0760)
     p_lon = problem.get("longitude", 72.8777)
+
+    # 0. Safely retrieve Neo4j graph candidates for the problem
+    graph_hits: Dict[str, Dict[str, Any]] = {}
+    try:
+        from backend.services.neo4j.retrieval import GraphCandidateRetriever
+        retriever = GraphCandidateRetriever()
+        graph_candidates = retriever.retrieve_candidates(
+            problem_id=str(problem_id),
+            device_type=fingerprint.get("device_type"),
+            brand=fingerprint.get("brand"),
+            model=fingerprint.get("model"),
+            issue=fingerprint.get("issue"),
+            context=fingerprint.get("context"),
+            suspected_component=fingerprint.get("suspected_component"),
+            repair_type=fingerprint.get("repair_type"),
+            extracted_skills=fingerprint.get("extracted_skills"),
+        )
+        for cand in graph_candidates:
+            w_id = str(cand.get("worker_id"))
+            graph_hits[w_id] = cand
+    except Exception as exc:
+        # Neo4j failure must NOT break the matching API
+        graph_hits = {}
 
     results = []
 
@@ -93,7 +116,21 @@ def compute_matches_for_problem(problem_id: str, limit: int = 5) -> List[Dict[st
         else:
             proximity_score = 0.10
 
-        # Weighted calculation
+        # 5. Enrich signals with Graph Evidence if worker is present in Neo4j candidate hits
+        g_hit = graph_hits.get(str(worker_id)) or graph_hits.get(user_id)
+        graph_reasons = []
+
+        if g_hit:
+            g_score = g_hit.get("graph_score", 0.0)
+            if g_score > 0:
+                g_norm = min(0.99, round(g_score / 100.0, 4))
+                problem_similarity = round(max(problem_similarity, g_norm), 4)
+                context_similarity = round(min(0.99, max(context_similarity, 0.70 + (g_score * 0.0025))), 4)
+            if g_hit.get("verification_status") == "verified":
+                verified_confidence = round(max(verified_confidence, 0.88), 4)
+            graph_reasons = g_hit.get("explanations", [])
+
+        # Weighted calculation preserving exact prototype weights (40 / 30 / 20 / 10)
         match_score = (
             settings.WEIGHT_PROBLEM_SIMILARITY * problem_similarity +
             settings.WEIGHT_CONTEXT_SIMILARITY * context_similarity +
@@ -102,17 +139,17 @@ def compute_matches_for_problem(problem_id: str, limit: int = 5) -> List[Dict[st
         )
         match_score = round(match_score, 4)
 
-        # Build transparent human explanations (Section 8)
-        explanations = []
-        if solved_cases_count > 0:
+        # Build transparent human explanations combining Graph evidence & local metadata
+        explanations = list(graph_reasons)
+        if solved_cases_count > 0 and not any("solved" in r.lower() for r in explanations):
             explanations.append(f"Solved {solved_cases_count} similar real-world repair cases in this category")
-        if matching_skills:
+        if matching_skills and not any("mastery" in r.lower() for r in explanations):
             explanations.append(f"Mastery in required skills: {', '.join(matching_skills)}")
-        if verified_outcomes_count > 0:
+        if verified_outcomes_count > 0 and not any("verified" in r.lower() for r in explanations):
             explanations.append(f"{verified_outcomes_count} customer-verified positive repair outcomes")
-        if dist_km <= radius:
+        if dist_km <= radius and not any("within" in r.lower() for r in explanations):
             explanations.append(f"Within {round(dist_km, 1)} km (technician covers {int(radius)} km service radius)")
-        else:
+        elif not any("located" in r.lower() for r in explanations):
             explanations.append(f"Located approx {round(dist_km, 1)} km from your repair location")
 
         match_id = str(uuid.uuid4())
@@ -136,7 +173,7 @@ def compute_matches_for_problem(problem_id: str, limit: int = 5) -> List[Dict[st
             "rating": float(worker.get("rating", 5.0)),
             "total_reviews": int(worker.get("total_reviews", 0)),
             "is_available": worker.get("is_available", True),
-            "relevant_solved_cases": solved_cases_count,
+            "relevant_solved_cases": max(solved_cases_count, 1 if g_hit else 0),
             "skills": worker_skill_names
         }
         results.append(result_item)
