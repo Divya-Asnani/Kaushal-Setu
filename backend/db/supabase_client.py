@@ -257,6 +257,12 @@ class SupabaseDataStore:
                 for row in res_p.data:
                     self.problems[str(row["id"])] = row
 
+            # Problem Fingerprints
+            res_pf = self.supabase_client.table("problem_fingerprints").select("*").execute()
+            if res_pf.data:
+                for row in res_pf.data:
+                    self.problem_fingerprints[str(row["id"])] = row
+
             # 4. Service Requests
             res_sr = self.supabase_client.table("service_requests").select("*").execute()
             if res_sr.data:
