@@ -202,3 +202,71 @@ def test_context_scoring_never_returns_zero():
 
     score = _structured_context_score(Fingerprint(model="galaxy s23"), [], [])
     assert 0 < score <= 1.0
+
+
+# ------------------------------------------------------- relevance filtering
+
+
+def _candidate(worker_id, score, evidence=True, in_radius=True, user_id=None):
+    return {
+        "_user_id": user_id or worker_id,
+        "_has_evidence": evidence,
+        "_within_radius": in_radius,
+        "worker_id": worker_id,
+        "match_score": score,
+    }
+
+
+def test_a_technician_with_no_evidence_is_not_offered():
+    """The reported bug: every technician came back regardless of relevance."""
+    from backend.services.ai_engine.adapters import _filter_relevant
+
+    kept = _filter_relevant([
+        _candidate("relevant", 0.85, evidence=True),
+        _candidate("unrelated", 0.39, evidence=False),
+    ])
+    assert [c["worker_id"] for c in kept] == ["relevant"]
+
+
+def test_technicians_outside_their_service_radius_are_excluded():
+    from backend.services.ai_engine.adapters import _filter_relevant
+
+    kept = _filter_relevant([
+        _candidate("near", 0.80, in_radius=True),
+        _candidate("far", 0.79, in_radius=False),
+    ])
+    assert [c["worker_id"] for c in kept] == ["near"]
+
+
+def test_filtering_never_returns_an_empty_list():
+    """A customer with no options cannot proceed; a weak match beats nothing."""
+    from backend.services.ai_engine.adapters import _filter_relevant
+
+    kept = _filter_relevant([
+        _candidate("weak", 0.10, evidence=False, in_radius=False),
+    ])
+    assert len(kept) == 1
+
+
+def test_the_score_floor_drops_weak_matches():
+    from backend.services.ai_engine.adapters import _filter_relevant
+    from backend.services.ai_engine.config import settings
+
+    kept = _filter_relevant([
+        _candidate("strong", settings.match_min_score + 0.2),
+        _candidate("weak", settings.match_min_score - 0.2),
+    ])
+    assert [c["worker_id"] for c in kept] == ["strong"]
+
+
+def test_one_card_per_person_even_with_duplicate_worker_rows():
+    """The data holds more than one worker_profiles row per profile."""
+    from backend.services.ai_engine.adapters import _deduplicate
+
+    kept = _deduplicate([
+        _candidate("row-a", 0.90, user_id="same-person"),
+        _candidate("row-b", 0.70, user_id="same-person"),
+        _candidate("row-c", 0.60, user_id="other-person"),
+    ])
+    assert [c["worker_id"] for c in kept] == ["row-a", "row-c"]
+    assert kept[0]["match_score"] == 0.90, "the better-scoring row should survive"

@@ -71,6 +71,22 @@ class EngineSettings:
         default_factory=lambda: _env_int("MATCH_CANDIDATE_POOL", 50)
     )
 
+    # --- Relevance filtering ---
+    # A technician with no evidence of relevance should not be offered at all. These
+    # control how much evidence is enough; set MATCH_MIN_SCORE to 0 to rank everyone.
+    match_min_score: float = field(
+        default_factory=lambda: _env_float("MATCH_MIN_SCORE", 0.45)
+    )
+    # Below this cosine similarity a retrieved case is not treated as real evidence.
+    match_min_similarity: float = field(
+        default_factory=lambda: _env_float("MATCH_MIN_SIMILARITY", 0.60)
+    )
+    # Workers outside their own stated service radius are excluded, unless that would
+    # leave the customer with nothing.
+    match_enforce_radius: bool = field(
+        default_factory=lambda: _env("MATCH_ENFORCE_RADIUS", "true") != "false"
+    )
+
     # --- Ranking weights ---
     # Named to match the application's own settings so the two cannot drift apart.
     weight_problem: float = field(

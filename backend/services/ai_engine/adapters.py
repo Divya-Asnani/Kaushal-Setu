@@ -140,7 +140,7 @@ def _semantic_scores(fingerprint: fp_engine.Fingerprint) -> dict[str, dict[str, 
         entry["similarity"] = max(entry["similarity"], candidate.similarity)
         # Only count genuinely close cases, so a long tail of weak matches cannot
         # inflate a worker's apparent depth of experience.
-        if candidate.similarity >= 0.6:
+        if candidate.similarity >= settings.match_min_similarity:
             entry["matches"] += 1
             if len(entry["titles"]) < 3:
                 entry["titles"].append(candidate.title)
@@ -295,7 +295,22 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
             distance_km, radius, declared_skills, worker_skills,
         )
 
+        # Evidence of relevance to *this* problem: a genuinely similar past repair, a
+        # declared skill the problem calls for, or a component the worker has handled.
+        # Without any of these a technician is not a match, however close they are or
+        # however good their rating -- offering them is what makes the list look like
+        # "every technician" rather than a match.
+        skill_overlap = declared_skills & {s.lower() for s in worker_skills if s}
+        has_evidence = bool(
+            (hit and hit["similarity"] >= settings.match_min_similarity)
+            or skill_overlap
+            or semantic_matches
+        )
+
         results.append({
+            "_user_id": user_id,
+            "_has_evidence": has_evidence,
+            "_within_radius": distance_km <= radius,
             "match_result_id": str(uuid.uuid4()),
             "problem_id": problem_id,
             "worker_id": worker_id,
@@ -322,9 +337,13 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
         })
 
     results.sort(key=lambda item: item["match_score"], reverse=True)
+    results = _deduplicate(results)
+    results = _filter_relevant(results)
 
     final: list[dict[str, Any]] = []
     for index, item in enumerate(results[:limit]):
+        for key in ("_user_id", "_has_evidence", "_within_radius"):
+            item.pop(key, None)
         item["rank_position"] = index + 1
         db.match_results[str(item["match_result_id"])] = {
             "id": str(item["match_result_id"]),
@@ -349,6 +368,49 @@ def _compute(problem_id: str, limit: int, db: Any) -> list[dict[str, Any]]:
         final.append(item)
 
     return final
+
+
+def _deduplicate(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One card per person.
+
+    The data currently holds more than one worker_profiles row for the same profile,
+    which would otherwise show the same technician twice. Results arrive sorted by
+    score, so the first occurrence is the best-scoring row for that person.
+    """
+    seen: set[str] = set()
+    unique = []
+    for item in results:
+        key = item.get("_user_id") or str(item["worker_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _filter_relevant(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop technicians who are not actually matches for this problem.
+
+    Three gates, applied in order of how defensible they are. Each is skipped if it
+    would empty the list: showing a weak match with honest explanations beats showing
+    nothing, and a customer with no options cannot proceed at all.
+    """
+    def keep(candidates: list[dict[str, Any]], predicate) -> list[dict[str, Any]]:
+        filtered = [c for c in candidates if predicate(c)]
+        return filtered or candidates
+
+    # 1. Eligibility: a technician who does not serve this area is not an option.
+    if settings.match_enforce_radius:
+        results = keep(results, lambda c: c["_within_radius"])
+
+    # 2. Evidence: no similar past work and no relevant skill means no basis to offer.
+    results = keep(results, lambda c: c["_has_evidence"])
+
+    # 3. Quality floor on the combined score.
+    if settings.match_min_score > 0:
+        results = keep(results, lambda c: c["match_score"] >= settings.match_min_score)
+
+    return results
 
 
 def _explain(
