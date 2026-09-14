@@ -8,3 +8,8 @@ supabase>=2.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 pytest>=8.0.0
+
+# --- AI engine (backend/services/ai_engine) ---
+google-genai>=0.8.0        # AI engine: Gemini fingerprinting + embeddings
+psycopg[binary,pool]>=3.2  # AI engine: pgvector similarity search
+httpx>=0.27.0

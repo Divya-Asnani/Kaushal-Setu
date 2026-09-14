@@ -8,7 +8,9 @@ from backend.db.supabase_client import db
 from backend.schemas.problem import (
     ProblemCreate, ProblemRead, ProblemFingerprintRequest, ProblemFingerprintRead
 )
-from backend.services.ai.fingerprint import extract_problem_fingerprint
+# AI engine: real Gemini extraction, falling back to the heuristic extractor
+# in backend/services/ai/fingerprint.py when unconfigured or on failure.
+from backend.services.ai_engine.adapters import extract_problem_fingerprint
 from backend.schemas.common import AppException
 
 router = APIRouter(prefix="/problems", tags=["Problems"])

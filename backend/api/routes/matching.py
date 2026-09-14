@@ -3,7 +3,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
 from backend.api.deps import CurrentUser, get_current_user, check_problem_owner
 from backend.schemas.matching import MatchResponse
-from backend.services.matching.matcher import compute_matches_for_problem
+# AI engine: pgvector semantic retrieval, falling back to the skill-overlap
+# matcher in backend/services/matching/matcher.py when unconfigured or on failure.
+from backend.services.ai_engine.adapters import compute_matches_for_problem
 from backend.schemas.common import AppException
 
 router = APIRouter(prefix="/problems", tags=["Matching"])
