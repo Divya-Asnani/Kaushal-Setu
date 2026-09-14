@@ -1,0 +1,35 @@
+# The Flutter SDK was cloned into the repo root (638 MB). It must never enter a
+# build context -- the backend does not need it, and the Flutter image brings its own.
+/flutter/
+
+# Secrets never enter an image layer; credentials arrive at runtime via env_file.
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+.venv/
+venv/
+env/
+
+# Flutter build output and caches (the image rebuilds these)
+kaushalsetu/build/
+kaushalsetu/.dart_tool/
+kaushalsetu/.flutter-plugins
+kaushalsetu/.flutter-plugins-dependencies
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+.scratch/

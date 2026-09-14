@@ -1,0 +1,38 @@
+# KaushalSetu Flutter web client, built and served by nginx.
+#
+# Kept at the repo root rather than inside kaushalsetu/ so the application's own
+# directory is untouched.
+#
+# The first build is slow: the image carries the Flutter SDK and has to fetch packages.
+# Subsequent builds reuse the layers unless pubspec or the sources change.
+FROM ghcr.io/cirruslabs/flutter:stable AS build
+
+WORKDIR /app
+
+# Resolve dependencies first so the pub layer stays cached across source edits.
+COPY kaushalsetu/pubspec.yaml kaushalsetu/pubspec.lock ./
+RUN flutter pub get
+
+COPY kaushalsetu/ ./
+# pub get again: the full copy can bring a pubspec newer than the cached layer.
+RUN flutter pub get && flutter build web --release
+
+
+FROM nginx:alpine AS runtime
+
+COPY --from=build /app/build/web /usr/share/nginx/html
+
+# Flutter web is a single-page app: unknown paths must return index.html rather than a
+# 404, or a page refresh on any route breaks.
+RUN printf '%s\n' \
+    'server {' \
+    '  listen 80;' \
+    '  root /usr/share/nginx/html;' \
+    '  index index.html;' \
+    '  location / { try_files $uri $uri/ /index.html; }' \
+    '}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://localhost/ || exit 1

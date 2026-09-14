@@ -58,14 +58,16 @@ def _is_unreachable(exc: Exception) -> bool:
     )
 
 
-def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+def _run(sql: str, params: tuple[Any, ...], fetch: bool) -> list[dict[str, Any]]:
     from psycopg.rows import dict_row
 
     try:
         with _get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(sql, params)
-                return cur.fetchall()
+                # An INSERT or UPDATE produces no result set, and fetching from one
+                # raises -- which would report a successful write as a failure.
+                return cur.fetchall() if fetch and cur.description else []
     except APIError:
         raise
     except Exception as exc:
@@ -75,8 +77,18 @@ def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
                 VECTOR_SEARCH_ERROR, "The vector database is unreachable.",
                 {"hint": IPV6_HINT},
             ) from exc
-        log.exception("pgvector query failed")
+        log.exception("pgvector statement failed")
         raise APIError(VECTOR_SEARCH_ERROR, "Semantic search failed.") from exc
+
+
+def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    """Run a statement and return its rows."""
+    return _run(sql, params, fetch=True)
+
+
+def execute(sql: str, params: tuple[Any, ...] = ()) -> None:
+    """Run a statement that returns no rows."""
+    _run(sql, params, fetch=False)
 
 
 def to_vector_literal(values: list[float]) -> str:

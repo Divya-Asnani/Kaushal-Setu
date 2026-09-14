@@ -1,0 +1,39 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kaushalsetu-api:latest
+    container_name: kaushalsetu-api
+    # The web client calls http://localhost:8000/api/v1 from the browser, so this
+    # port must stay 8000 unless kaushalsetu/lib/core/config/app_config.dart changes.
+    ports:
+      - "${API_PORT:-8000}:8000"
+    # Supabase, Gemini and Neo4j are hosted services: the container needs credentials,
+    # not sibling containers. env_file keeps them out of the image.
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # Flutter web client. Excluded from the default `docker compose up` because the
+  # first build downloads the Flutter SDK and takes several minutes.
+  #   docker compose --profile web up
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.flutter
+    image: kaushalsetu-web:latest
+    container_name: kaushalsetu-web
+    profiles: ["web"]
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

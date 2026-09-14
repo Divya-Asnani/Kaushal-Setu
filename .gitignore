@@ -41,3 +41,7 @@ kaushalsetu/android/app/release/
 .DS_Store
 Thumbs.db
 *.log
+
+# Flutter SDK clone at the repo root (638 MB). The app itself is kaushalsetu/;
+# the SDK belongs outside the repository.
+/flutter/

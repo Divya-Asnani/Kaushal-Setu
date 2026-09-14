@@ -367,9 +367,11 @@ def _explain(
 
     if hit and semantic_matches:
         closest = round(hit["similarity"] * 100)
+        noun = "repair" if semantic_matches == 1 else "repairs"
+        verb = "matches" if semantic_matches == 1 else "match"
         reasons.append(
-            f"{semantic_matches} past repair{'s' if semantic_matches != 1 else ''} "
-            f"semantically match this problem (closest {closest}%)"
+            f"{semantic_matches} past {noun} semantically {verb} this problem "
+            f"(closest {closest}%)"
         )
         for title in hit.get("titles", [])[:2]:
             if title:
